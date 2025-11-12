@@ -4,6 +4,7 @@ output/
 *.zip
 *.pdf
 STNF4D_code/
+TIGRE-2.3/
 x2-gaussian-main-origin/
 __pycache__/
 *.pyc
