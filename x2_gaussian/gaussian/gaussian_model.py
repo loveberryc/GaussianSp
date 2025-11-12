@@ -33,6 +33,7 @@ from x2_gaussian.utils.gaussian_utils import (
     build_scaling_rotation,
 )
 from x2_gaussian.gaussian.deformation import deform_network
+from x2_gaussian.gaussian.regulation import compute_plane_smoothness
 
 EPS = 1e-5
 
@@ -53,44 +54,12 @@ def _total_variation_nd(tensor: torch.Tensor, dims) -> torch.Tensor:
     return total
 
 
-def _second_order_smoothness(
-    tensor: torch.Tensor,
-    dim: int,
-    chunk_size: int = 8,
-) -> torch.Tensor:
-    size = tensor.shape[dim]
-    if size < 3:
-        return torch.zeros(1, device=tensor.device, dtype=torch.float32)
-    total = torch.zeros(1, device=tensor.device, dtype=torch.float32)
-    count = 0
-    for start in range(0, size - 2, chunk_size):
-        length = min(chunk_size, size - 2 - start)
-        slice0 = tensor.narrow(dim, start, length).to(torch.float32)
-        slice1 = tensor.narrow(dim, start + 1, length).to(torch.float32)
-        slice2 = tensor.narrow(dim, start + 2, length).to(torch.float32)
-        second = slice2 - 2.0 * slice1 + slice0
-        total = total + torch.sum(second * second)
-        count += second.numel()
-    if count == 0:
-        return total
-    return total / float(count)
-
-
-def _chunked_l1_to_constant(
-    tensor: torch.Tensor,
-    constant: float,
-    chunk_dim: int,
-    chunk_size: int = 8,
-) -> torch.Tensor:
-    total = torch.zeros(1, device=tensor.device, dtype=torch.float32)
-    numel = tensor.numel()
-    if numel == 0:
-        return total
-    const = torch.tensor(constant, device=tensor.device, dtype=torch.float32)
-    for chunk in torch.split(tensor, chunk_size, dim=chunk_dim):
-        chunk_fp32 = chunk.to(torch.float32)
-        total = total + torch.sum(torch.abs(chunk_fp32 - const))
-    return total / float(numel)
+def _second_order_smoothness(tensor: torch.Tensor, dim: int) -> torch.Tensor:
+    first = _finite_difference(tensor, dim)
+    if first.shape[dim] < 2:
+        return torch.zeros(1, device=tensor.device, dtype=tensor.dtype)
+    second = _finite_difference(first, dim)
+    return torch.mean(second * second)
 
 
 class GaussianModel:
@@ -137,6 +106,9 @@ class GaussianModel:
         self.optimizer = None
         self.spatial_lr_scale = 0
         self.scale_bound = scale_bound
+        self.grid_mode = getattr(args, "grid_mode", "four_volume")
+        if getattr(args, "no_grid", False) and self.grid_mode == "four_volume":
+            self.grid_mode = "hexplane"
         self._deformation = deform_network(args)
         self._deformation_table = torch.empty(0)
         self.period = torch.empty(0)
@@ -298,14 +270,27 @@ class GaussianModel:
                 "lr": training_args.rotation_lr_init * self.spatial_lr_scale,
                 "name": "rotation",
             },
-            {'params': list(self._deformation.get_mlp_parameters()), 'lr': training_args.deformation_lr_init * self.spatial_lr_scale, "name": "deformation"},
-            {'params': list(self._deformation.get_grid_parameters()), 'lr': training_args.grid_lr_init * self.spatial_lr_scale, "name": "grid"},
+            {
+                "params": list(self._deformation.get_mlp_parameters()),
+                "lr": training_args.deformation_lr_init * self.spatial_lr_scale,
+                "name": "deformation",
+            },
             {
                 "params": [self.period],
                 "lr": training_args.period_lr_init * self.spatial_lr_scale,
                 "name": "period",
             },
         ]
+        grid_params = list(self._deformation.get_grid_parameters())
+        if grid_params:
+            l.insert(
+                5,
+                {
+                    "params": grid_params,
+                    "lr": training_args.grid_lr_init * self.spatial_lr_scale,
+                    "name": "grid",
+                },
+            )
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         self.xyz_scheduler_args = get_expon_lr_func(
@@ -333,10 +318,15 @@ class GaussianModel:
                                                     lr_final=training_args.deformation_lr_final*self.spatial_lr_scale,
                                                     lr_delay_mult=training_args.deformation_lr_delay_mult,
                                                     max_steps=training_args.position_lr_max_steps)    
-        self.grid_scheduler_args = get_expon_lr_func(lr_init=training_args.grid_lr_init*self.spatial_lr_scale,
-                                                    lr_final=training_args.grid_lr_final*self.spatial_lr_scale,
-                                                    lr_delay_mult=training_args.deformation_lr_delay_mult,
-                                                    max_steps=training_args.position_lr_max_steps)  
+        if grid_params:
+            self.grid_scheduler_args = get_expon_lr_func(
+                lr_init=training_args.grid_lr_init * self.spatial_lr_scale,
+                lr_final=training_args.grid_lr_final * self.spatial_lr_scale,
+                lr_delay_mult=training_args.deformation_lr_delay_mult,
+                max_steps=training_args.position_lr_max_steps,
+            )
+        else:
+            self.grid_scheduler_args = None
         
         self.period_scheduler_args = get_expon_lr_func(
             lr_init=training_args.period_lr_init * self.spatial_lr_scale,
@@ -359,9 +349,9 @@ class GaussianModel:
             if param_group["name"] == "rotation":
                 lr = self.rotation_scheduler_args(iteration)
                 param_group["lr"] = lr
-            if  "grid" in param_group["name"]:
+            if "grid" in param_group["name"] and self.grid_scheduler_args is not None:
                 lr = self.grid_scheduler_args(iteration)
-                param_group['lr'] = lr
+                param_group["lr"] = lr
             if param_group["name"] == "deformation":
                 lr = self.deformation_scheduler_args(iteration)
                 param_group['lr'] = lr
@@ -739,7 +729,7 @@ class GaussianModel:
                         print(name," :",weight.grad.mean(), weight.grad.min(), weight.grad.max())
         print("-"*50)
 
-    def _plane_regulation(self):
+    def _plane_regulation_four_volume(self):
         multi_res_grids = self._deformation.deformation_net.grid.grids
         total = torch.zeros(1, device=self.period.device)
         for level in multi_res_grids:
@@ -749,7 +739,7 @@ class GaussianModel:
             total = total + _total_variation_nd(level.yzt, dims=(3, 4))
         return total
     
-    def _time_regulation(self):
+    def _time_regulation_four_volume(self):
         multi_res_grids = self._deformation.deformation_net.grid.grids
         total = torch.zeros(1, device=self.period.device)
         for level in multi_res_grids:
@@ -758,15 +748,63 @@ class GaussianModel:
             total = total + _second_order_smoothness(level.yzt, dim=2)
         return total
     
-    def _l1_regulation(self):
+    def _l1_regulation_four_volume(self):
         multi_res_grids = self._deformation.deformation_net.grid.grids
 
         total = torch.zeros(1, device=self.period.device)
         for level in multi_res_grids:
-            total = total + _chunked_l1_to_constant(level.xyt, 1.0, chunk_dim=2)
-            total = total + _chunked_l1_to_constant(level.xzt, 1.0, chunk_dim=2)
-            total = total + _chunked_l1_to_constant(level.yzt, 1.0, chunk_dim=2)
+            total = total + torch.abs(1 - level.xyt).mean()
+            total = total + torch.abs(1 - level.xzt).mean()
+            total = total + torch.abs(1 - level.yzt).mean()
+        return total
+
+    def _plane_regulation_hexplane(self):
+        multi_res_grids = self._deformation.deformation_net.grid.grids
+        total = torch.zeros(1, device=self.period.device)
+        for grids in multi_res_grids:
+            if len(grids) == 3:
+                time_grids = []
+            else:
+                time_grids = [0, 1, 3]
+            for grid_id in time_grids:
+                total = total + compute_plane_smoothness(grids[grid_id])
+        return total
+
+    def _time_regulation_hexplane(self):
+        multi_res_grids = self._deformation.deformation_net.grid.grids
+        total = torch.zeros(1, device=self.period.device)
+        for grids in multi_res_grids:
+            if len(grids) == 3:
+                time_grids = []
+            else:
+                time_grids = [2, 4, 5]
+            for grid_id in time_grids:
+                total = total + compute_plane_smoothness(grids[grid_id])
+        return total
+
+    def _l1_regulation_hexplane(self):
+        multi_res_grids = self._deformation.deformation_net.grid.grids
+        total = torch.zeros(1, device=self.period.device)
+        for grids in multi_res_grids:
+            if len(grids) == 3:
+                continue
+            else:
+                spatiotemporal_grids = [2, 4, 5]
+            for grid_id in spatiotemporal_grids:
+                total = total + torch.abs(1 - grids[grid_id]).mean()
         return total
     
     def compute_regulation(self, time_smoothness_weight, l1_time_planes_weight, plane_tv_weight):
-        return plane_tv_weight * self._plane_regulation() + time_smoothness_weight * self._time_regulation() + l1_time_planes_weight * self._l1_regulation()
+        if self.grid_mode == "mlp":
+            return torch.zeros(1, device=self.period.device)
+        if self.grid_mode == "hexplane":
+            return (
+                plane_tv_weight * self._plane_regulation_hexplane()
+                + time_smoothness_weight * self._time_regulation_hexplane()
+                + l1_time_planes_weight * self._l1_regulation_hexplane()
+            )
+        return (
+            plane_tv_weight * self._plane_regulation_four_volume()
+            + time_smoothness_weight * self._time_regulation_four_volume()
+            + l1_time_planes_weight * self._l1_regulation_four_volume()
+        )

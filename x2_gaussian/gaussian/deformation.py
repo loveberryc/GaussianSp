@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
 from x2_gaussian.gaussian.graphics_utils import apply_rotation, batch_quaternion_multiply
-from x2_gaussian.gaussian.hexplane import HexPlaneField
+from x2_gaussian.gaussian.hexplane import build_feature_grid
 from x2_gaussian.gaussian.grid import DenseGrid
 # from scene.grid import HashHexPlane
 class Deformation(nn.Module):
@@ -22,8 +22,12 @@ class Deformation(nn.Module):
         self.input_ch_time = input_ch_time
         self.skips = skips
         self.grid_pe = grid_pe
-        self.no_grid = args.no_grid
-        self.grid = HexPlaneField(args.bounds, args.kplanes_config, args.multires)
+        self.grid_mode = getattr(args, "grid_mode", "four_volume")
+        if getattr(args, "no_grid", False) and self.grid_mode == "four_volume":
+            # Backward compatibility: --no_grid now aliases legacy hexplane.
+            self.grid_mode = "hexplane"
+        self.no_grid = self.grid_mode == "mlp"
+        self.grid = build_feature_grid(self.grid_mode, args.bounds, args.kplanes_config, args.multires)
         # breakpoint()
         self.args = args
         # self.args.empty_voxel=True
@@ -67,14 +71,12 @@ class Deformation(nn.Module):
     def query_time(self, rays_pts_emb, scales_emb, rotations_emb, time_feature, time_emb):
 
         if self.no_grid:
-            h = torch.cat([rays_pts_emb[:,:3],time_emb[:,:1]],-1)
+            hidden = torch.cat([rays_pts_emb[:, :3], time_emb[:, :1]], -1)
         else:
-
-            grid_feature = self.grid(rays_pts_emb[:,:3], time_emb[:,:1])
-            # breakpoint()
+            grid_feature = self.grid(rays_pts_emb[:, :3], time_emb[:, :1])
             if self.grid_pe > 1:
-                grid_feature = poc_fre(grid_feature,self.grid_pe)
-            hidden = torch.cat([grid_feature],-1) 
+                grid_feature = poc_fre(grid_feature, self.grid_pe)
+            hidden = torch.cat([grid_feature], -1)
         
         
         hidden = self.feature_out(hidden)      # jsut nn.Linear(128, 256)
@@ -151,6 +153,8 @@ class Deformation(nn.Module):
         for name, param in self.named_parameters():
             if  "grid" in name:
                 parameter_list.append(param)
+        if self.no_grid:
+            return []
         return parameter_list
     
 class deform_network(nn.Module):

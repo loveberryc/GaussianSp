@@ -2,7 +2,11 @@ data/
 output/
 *.log
 *.zip
+*.pdf
+STNF4D_code/
+x2-gaussian-main-origin/
 __pycache__/
 *.pyc
+.cursor/
 
 

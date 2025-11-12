@@ -1,3 +1,4 @@
+import itertools
 from typing import Optional, Sequence
 
 import torch
@@ -5,51 +6,126 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def get_normalized_directions(directions):
-    """SH encoding must be in the range [0, 1]
-
-    Args:
-        directions: batch of directions
-    """
-    return (directions + 1.0) / 2.0
-
-
-def normalize_aabb(pts, aabb):
+def normalize_aabb(pts: torch.Tensor, aabb: torch.Tensor) -> torch.Tensor:
     return (pts - aabb[0]) * (2.0 / (aabb[1] - aabb[0])) - 1.0
 
 
-def grid_sample_wrapper(grid: torch.Tensor, coords: torch.Tensor, align_corners: bool = True) -> torch.Tensor:
+def grid_sample_wrapper(
+    grid: torch.Tensor,
+    coords: torch.Tensor,
+    align_corners: bool = True,
+) -> torch.Tensor:
     grid_dim = coords.shape[-1]
 
     if grid.dim() == grid_dim + 1:
-        # no batch dimension present, need to add it
         grid = grid.unsqueeze(0)
     if coords.dim() == 2:
         coords = coords.unsqueeze(0)
 
-    if grid_dim == 2 or grid_dim == 3:
+    if grid_dim in (2, 3):
         grid_sampler = F.grid_sample
     else:
         raise NotImplementedError(
-            f"Grid-sample was called with {grid_dim}D data but is only "
-            f"implemented for 2 and 3D data."
+            f"Grid-sample was called with {grid_dim}D data but is only implemented for 2 and 3D data."
         )
 
-    if grid.dtype != coords.dtype:
-        coords = coords.to(grid.dtype)
     coords = coords.view([coords.shape[0]] + [1] * (grid_dim - 1) + list(coords.shape[1:]))
-    B, feature_dim = grid.shape[:2]
-    n = coords.shape[-2]
+    batch, feature_dim = grid.shape[:2]
+    num_samples = coords.shape[-2]
     interp = grid_sampler(
-        grid,  # [B, feature_dim, reso, ...]
-        coords,  # [B, 1, ..., n, grid_dim]
+        grid,
+        coords,
         align_corners=align_corners,
         mode="bilinear",
         padding_mode="border",
     )
-    interp = interp.view(B, feature_dim, n).transpose(-1, -2)  # [B, n, feature_dim]
-    interp = interp.squeeze()  # [B?, n, feature_dim?]
-    return interp
+    interp = interp.view(batch, feature_dim, num_samples).transpose(-1, -2)
+    return interp.squeeze()
+
+
+class LegacyHexPlaneField(nn.Module):
+    """Original HexPlane implementation from X2-Gaussian."""
+
+    def __init__(self, bounds, planeconfig, multires) -> None:
+        super().__init__()
+        aabb = torch.tensor([[bounds, bounds, bounds], [-bounds, -bounds, -bounds]])
+        self.aabb = nn.Parameter(aabb, requires_grad=False)
+        self.grid_config = [planeconfig]
+        self.multiscale_res_multipliers = multires
+        self.concat_features = True
+
+        self.grids = nn.ModuleList()
+        self.feat_dim = 0
+        for res in self.multiscale_res_multipliers:
+            config = self.grid_config[0].copy()
+            config["resolution"] = [r * res for r in config["resolution"][:3]] + config["resolution"][3:]
+            grid_planes = self._init_grid_param(
+                grid_nd=config["grid_dimensions"],
+                in_dim=config["input_coordinate_dim"],
+                out_dim=config["output_coordinate_dim"],
+                reso=config["resolution"],
+            )
+            if self.concat_features:
+                self.feat_dim += grid_planes[-1].shape[1]
+            else:
+                self.feat_dim = grid_planes[-1].shape[1]
+            self.grids.append(grid_planes)
+        print("feature_dim:", self.feat_dim)
+
+    @staticmethod
+    def _init_grid_param(grid_nd, in_dim, out_dim, reso, a=0.1, b=0.5):
+        assert in_dim == len(reso), "Resolution must have same number of elements as input-dimension"
+        has_time_planes = in_dim == 4
+        assert grid_nd <= in_dim
+        coordinate_combinations = list(itertools.combinations(range(in_dim), grid_nd))
+        grid_coefs = nn.ParameterList()
+        for combination in coordinate_combinations:
+            new_grid = nn.Parameter(torch.empty([1, out_dim] + [reso[idx] for idx in combination[::-1]]))
+            if has_time_planes and 3 in combination:
+                nn.init.ones_(new_grid)
+            else:
+                nn.init.uniform_(new_grid, a=a, b=b)
+            grid_coefs.append(new_grid)
+        return grid_coefs
+
+    @property
+    def get_aabb(self):
+        return self.aabb[0], self.aabb[1]
+
+    def set_aabb(self, xyz_max, xyz_min):
+        aabb = torch.tensor([xyz_max, xyz_min], dtype=torch.float32)
+        self.aabb = nn.Parameter(aabb, requires_grad=False)
+        print("Voxel Plane: set aabb=", self.aabb)
+
+    def get_density(self, pts: torch.Tensor, timestamps: Optional[torch.Tensor] = None):
+        pts = normalize_aabb(pts, self.aabb)
+        if timestamps is None:
+            timestamps = torch.zeros_like(pts[..., :1])
+        pts = torch.cat((pts, timestamps), dim=-1)
+        pts = pts.reshape(-1, pts.shape[-1])
+
+        multi_scale_interp = [] if self.concat_features else 0.0
+        coordinate_combinations = list(itertools.combinations(range(pts.shape[-1]), self.grid_config[0]["grid_dimensions"]))
+        for grid in self.grids:
+            interp_space = 1.0
+            for idx, combination in enumerate(coordinate_combinations):
+                feature_dim = grid[idx].shape[1]
+                interp_out = grid_sample_wrapper(grid[idx], pts[..., combination]).view(-1, feature_dim)
+                interp_space = interp_space * interp_out
+            if self.concat_features:
+                multi_scale_interp.append(interp_space)
+            else:
+                multi_scale_interp = multi_scale_interp + interp_space
+
+        if self.concat_features:
+            multi_scale_interp = torch.cat(multi_scale_interp, dim=-1)
+        if len(multi_scale_interp) < 1:
+            multi_scale_interp = torch.zeros((0, 1)).to(pts.device)
+
+        return multi_scale_interp
+
+    def forward(self, pts: torch.Tensor, timestamps: Optional[torch.Tensor] = None):
+        return self.get_density(pts, timestamps)
 
 
 class OrthogonalVolumeLevel(nn.Module):
@@ -69,23 +145,22 @@ class OrthogonalVolumeLevel(nn.Module):
 
         self.static_xyz = nn.Parameter(
             torch.empty(1, out_dim, max(sz, 2), max(sy, 2), max(sx, 2))
-        )  # (D, H, W) -> (z, y, x)
+        )
         self.xyt = nn.Parameter(
             torch.empty(1, out_dim, max(tz, 2), max(sy, 2), max(sx, 2))
-        )  # (time, y, x)
+        )
         self.xzt = nn.Parameter(
             torch.empty(1, out_dim, max(tz, 2), max(sz, 2), max(sx, 2))
-        )  # (time, z, x)
+        )
         self.yzt = nn.Parameter(
             torch.empty(1, out_dim, max(tz, 2), max(sz, 2), max(sy, 2))
-        )  # (time, z, y)
+        )
 
         self.reset_parameters(init_time_to_one, init_range)
 
     def reset_parameters(self, init_time_to_one: bool, init_range: Sequence[float]):
         a, b = init_range
         nn.init.uniform_(self.static_xyz, a=a, b=b)
-
         if init_time_to_one:
             nn.init.ones_(self.xyt)
             nn.init.ones_(self.xzt)
@@ -96,19 +171,14 @@ class OrthogonalVolumeLevel(nn.Module):
             nn.init.uniform_(self.yzt, a=a, b=b)
 
 
-class HexPlaneField(nn.Module):
-    def __init__(
-        self,
-        
-        bounds,
-        planeconfig,
-        multires
-    ) -> None:
+class FourOrthogonalVolumeField(nn.Module):
+    """Four orthogonal volume decomposition used by the STNF4D variant."""
+
+    def __init__(self, bounds, planeconfig, multires) -> None:
         super().__init__()
-        aabb = torch.tensor([[bounds,bounds,bounds],
-                             [-bounds,-bounds,-bounds]])
+        aabb = torch.tensor([[bounds, bounds, bounds], [-bounds, -bounds, -bounds]])
         self.aabb = nn.Parameter(aabb, requires_grad=False)
-        self.grid_config =  [planeconfig]
+        self.grid_config = [planeconfig]
         self.multiscale_res_multipliers = multires
         self.concat_features = True
 
@@ -133,7 +203,6 @@ class HexPlaneField(nn.Module):
             persistent=False,
         )
 
-        # 1. Init planes
         self.grids = nn.ModuleList()
         self.fusion_layers = nn.ModuleList()
         self.feat_dim = 0
@@ -163,7 +232,11 @@ class HexPlaneField(nn.Module):
                 init_range=(0.1, 0.5),
             )
             self.grids.append(level)
-            fusion = nn.Linear(self.output_coordinate_dim * 4, self.output_coordinate_dim, bias=True)
+            fusion = nn.Linear(
+                self.output_coordinate_dim * 4,
+                self.output_coordinate_dim,
+                bias=True,
+            )
             nn.init.xavier_uniform_(fusion.weight)
             if fusion.bias is not None:
                 nn.init.zeros_(fusion.bias)
@@ -179,13 +252,11 @@ class HexPlaneField(nn.Module):
     @property
     def get_aabb(self):
         return self.aabb[0], self.aabb[1]
-    def set_aabb(self,xyz_max, xyz_min):
-        aabb = torch.tensor([
-            xyz_max,
-            xyz_min
-        ],dtype=torch.float32)
-        self.aabb = nn.Parameter(aabb,requires_grad=False)
-        print("Voxel Plane: set aabb=",self.aabb)
+
+    def set_aabb(self, xyz_max, xyz_min):
+        aabb = torch.tensor([xyz_max, xyz_min], dtype=torch.float32)
+        self.aabb = nn.Parameter(aabb, requires_grad=False)
+        print("Voxel Plane: set aabb=", self.aabb)
 
     def _normalize_time(self, timestamps: torch.Tensor) -> torch.Tensor:
         t_min, t_max = self.time_bounds[0], self.time_bounds[1]
@@ -196,40 +267,37 @@ class HexPlaneField(nn.Module):
 
     def _sample_static(self, grid: torch.Tensor, pts_normalized: torch.Tensor) -> torch.Tensor:
         coords = torch.clamp(pts_normalized, -1.0, 1.0)
-        sampled = grid_sample_wrapper(grid, coords).to(pts_normalized.dtype)
+        sampled = grid_sample_wrapper(grid, coords)
         return sampled.view(-1, grid.shape[1])
 
     def _sample_xyt(self, grid: torch.Tensor, pts: torch.Tensor, time_norm: torch.Tensor) -> torch.Tensor:
         coords = torch.stack([pts[:, 0], pts[:, 1], time_norm[:, 0]], dim=-1)
         coords = torch.clamp(coords, -1.0, 1.0)
-        sampled = grid_sample_wrapper(grid, coords).to(pts.dtype)
+        sampled = grid_sample_wrapper(grid, coords)
         return sampled.view(-1, grid.shape[1])
 
     def _sample_xzt(self, grid: torch.Tensor, pts: torch.Tensor, time_norm: torch.Tensor) -> torch.Tensor:
         coords = torch.stack([pts[:, 0], pts[:, 2], time_norm[:, 0]], dim=-1)
         coords = torch.clamp(coords, -1.0, 1.0)
-        sampled = grid_sample_wrapper(grid, coords).to(pts.dtype)
+        sampled = grid_sample_wrapper(grid, coords)
         return sampled.view(-1, grid.shape[1])
 
     def _sample_yzt(self, grid: torch.Tensor, pts: torch.Tensor, time_norm: torch.Tensor) -> torch.Tensor:
         coords = torch.stack([pts[:, 1], pts[:, 2], time_norm[:, 0]], dim=-1)
         coords = torch.clamp(coords, -1.0, 1.0)
-        sampled = grid_sample_wrapper(grid, coords).to(pts.dtype)
+        sampled = grid_sample_wrapper(grid, coords)
         return sampled.view(-1, grid.shape[1])
 
     def get_density(self, pts: torch.Tensor, timestamps: Optional[torch.Tensor] = None):
-        """Computes and returns the features from four orthogonal volumes."""
         pts = normalize_aabb(pts, self.aabb)
         if timestamps is None:
             timestamps = torch.zeros_like(pts[..., :1])
 
-        orig_shape = pts.shape[:-1]
         pts_flat = pts.reshape(-1, pts.shape[-1])
         timestamps_flat = timestamps.reshape(-1, 1)
         time_norm = self._normalize_time(timestamps_flat)
 
         multi_scale_features = [] if self.concat_features else 0.0
-
         for level, fusion in zip(self.grids, self.fusion_layers):
             static_feat = self._sample_static(level.static_xyz, pts_flat)
             xyt_feat = self._sample_xyt(level.xyt, pts_flat, time_norm)
@@ -238,7 +306,6 @@ class HexPlaneField(nn.Module):
 
             combined = torch.cat([static_feat, xyt_feat, xzt_feat, yzt_feat], dim=-1)
             fused = fusion(combined)
-
             if self.concat_features:
                 multi_scale_features.append(fused)
             else:
@@ -254,10 +321,14 @@ class HexPlaneField(nn.Module):
 
         return features.view(-1, self.feat_dim)
 
-    def forward(self,
-                pts: torch.Tensor,
-                timestamps: Optional[torch.Tensor] = None):
+    def forward(self, pts: torch.Tensor, timestamps: Optional[torch.Tensor] = None):
+        return self.get_density(pts, timestamps)
 
-        features = self.get_density(pts, timestamps)
 
-        return features
+def build_feature_grid(mode: str, bounds, planeconfig, multires):
+    normalized_mode = (mode or "four_volume").lower()
+    if normalized_mode == "four_volume":
+        return FourOrthogonalVolumeField(bounds, planeconfig, multires)
+    if normalized_mode in {"hexplane", "legacy_hexplane", "mlp"}:
+        return LegacyHexPlaneField(bounds, planeconfig, multires)
+    raise ValueError(f"Unsupported grid mode '{mode}'. Expected one of ['four_volume', 'hexplane', 'mlp'].")

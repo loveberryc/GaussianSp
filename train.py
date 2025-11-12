@@ -489,6 +489,16 @@ if __name__ == "__main__":
     args.save_iterations.append(args.iterations)
     args.test_iterations.append(args.iterations)
     args.test_iterations.append(1)
+    if not hasattr(args, "grid_mode") or args.grid_mode is None:
+        args.grid_mode = "four_volume"
+    args.grid_mode = args.grid_mode.lower()
+    if args.no_grid:
+        print("Detected --no_grid flag: using legacy hexplane grid.")
+        args.grid_mode = "hexplane"
+    valid_grid_modes = {"four_volume", "hexplane", "mlp"}
+    if args.grid_mode not in valid_grid_modes:
+        raise ValueError(f"Unsupported grid_mode '{args.grid_mode}'. Expected one of {sorted(valid_grid_modes)}.")
+    args.no_grid = args.grid_mode == "hexplane"
     # fmt: on
 
     dirname = args.dirname

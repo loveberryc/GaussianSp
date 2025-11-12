@@ -92,6 +92,7 @@ class Scene:
             point_cloud_root, "iteration_{}".format(iteration)
         )
         os.makedirs(point_cloud_path, exist_ok=True)
+
         self.gaussians.save_ply(
             osp.join(point_cloud_path, "point_cloud.pickle")
         )  # Save pickle rather than ply

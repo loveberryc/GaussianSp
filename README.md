@@ -104,36 +104,45 @@ python train.py -s /root/autodl-tmp/4dctgs/x2-gaussian-main/data/dir_4d_case1.pi
 
 # Detached run (remember to activate env & export LD_LIBRARY_PATH first)
 nohup python train.py -s /root/autodl-tmp/4dctgs/x2-gaussian-main/data/dir_4d_case1.pickle \
-  --coarse_iter 5000 --iterations 30000 \
+  --coarse_iter 5000 --iterations 30000 --max_spatial_resolution 96\
   --test_iterations 5000 7000 10000 20000 30000 \
-  --save_iterations 10000 20000 30000 --dirname dir_4d_case1_default \
-  > train_dir_4d_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+  --save_iterations 10000 20000 30000 --dirname re_96_dir_4d_case1_default \
+  > re_train_96_dir_4d_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
 
-nohup python train.py -s /root/autodl-tmp/4dctgs/x2-gaussian-main/data/dir_4d_case1.pickle \
-  --coarse_iter 5000 --iterations 30000 \
+  nohup python train.py -s /root/autodl-tmp/4dctgs/x2-gaussian-main/data/dir_4d_case1.pickle \
+  --coarse_iter 5000 --iterations 30000 --max_spatial_resolution 80\
   --test_iterations 5000 7000 10000 20000 30000 \
-  --save_iterations 10000 20000 30000  \
-  --dirname four_vol_max112_d4case1 \
-  > train_four_vol_max112_d4case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+  --save_iterations 10000 20000 30000 --dirname re_re_80_dir_4d_case1_default \
+  > re_re_train_80_dir_4d_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
 
 提醒：从现在起，X2-Gaussian 的动态建模默认采用 STNF4D 引入的“四正交体”表示（静态 xyz + xyt/xzt/yzt 体），上述命令会自动使用该实现及默认正则化超参。
 
-- 默认情况下训练不会再落盘 `point_cloud/iteration_*` 结果，以避免磁盘快速写满；若需要导出，请额外添加 `--save_point_cloud`。若还想保留全部历史迭代，可同时添加 `--keep_all_point_cloud`（否则仅保留最近一次）。
-- 四正交体的最高空间分辨率默认限制为 `112`（`ModelHiddenParams.kplanes_config.max_spatial_resolution`）；若显存不足，可进一步调低该值（如 `96`）。当前实现采用 float32 网格配合分块正则，避免了半精度在细阶段可能出现的 NaN/Inf。
+- 默认训练流程不会再生成 `point_cloud/iteration_*` 目录，以避免磁盘写满；若确需导出中间点云，请额外添加 `--save_point_cloud`。若还想保留所有历史迭代，则再加 `--keep_all_point_cloud`（否则仅保留最近一次）。
+- 若希望自定义四正交体网格的最高分辨率，可追加 `--max_spatial_resolution <整数>` 或 `--max_time_resolution <整数>`，未显式指定时分别沿用默认 `80` 和 `150`。
+python train.py -s /root/autodl-tmp/4dctgs/x2-gaussian-main/data/dir_4d_case1.pickle \
+  --max_spatial_resolution 96 --max_time_resolution 120 \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 7000 10000 20000 30000 \
+  --save_iterations 10000 20000 30000 --dirname dir_4d_case1_default
 
-### 使用原始 HexPlane（未启用四正交体）
+### 切换体素网格表达
 
-若需切换回论文初版的 HexPlane 表达，只需在命令中加入 `--no_grid`，即可禁用四正交体特征场，恢复全 MLP 变形（训练流程保持不变）。
+- **四正交体（默认）**：无需额外参数，`grid_mode=four_volume`。
+- **原始 HexPlane**：在命令中追加 `--no_grid` *或* `--grid_mode hexplane`。
+- **纯 MLP 基线**：追加 `--grid_mode mlp`，完全禁用体素网格。
+
+示例（HexPlane）：
 
 ```
 python train.py -s /root/autodl-tmp/4dctgs/x2-gaussian-main/data/dir_4d_case1.pickle \
-  --no_grid \
+  --grid_mode hexplane \
   --coarse_iter 5000 --iterations 30000 \
   --test_iterations 5000 7000 10000 20000 30000 \
   --save_iterations 10000 20000 30000 --dirname dir_4d_case1_hexplane
 
 nohup python train.py -s /root/autodl-tmp/4dctgs/x2-gaussian-main/data/dir_4d_case1.pickle \
-  --no_grid \
+  --grid_mode hexplane \
   --coarse_iter 5000 --iterations 30000 \
   --test_iterations 5000 7000 10000 20000 30000 \
   --save_iterations 10000 20000 30000 --dirname dir_4d_case1_hexplane \

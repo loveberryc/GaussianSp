@@ -118,17 +118,20 @@ class ModelHiddenParams(ParamGroup):
         self.l1_time_planes = 0.0001  # TV loss of temporal grid
         self.period_regulation_weight = 1.0   # useless
         self.period_construction_weight = 1e-5  # useless
+        self.max_spatial_resolution = 80
+        self.max_time_resolution = 150
         self.kplanes_config = {
                              'grid_dimensions': 2,
                              'input_coordinate_dim': 4,
                              'output_coordinate_dim': 32,   # 32
                              'resolution': [64, 64, 64, 150],  # [64,64,64]: resolution of spatial grid. 25: resolution of temporal grid, better to be half length of dynamic frames
-                             'max_spatial_resolution': 112,
-                             'max_time_resolution': 150,
+                             'max_spatial_resolution': self.max_spatial_resolution,
+                             'max_time_resolution': self.max_time_resolution,
                             }    # 150
         self.multires = [1, 2, 4, 8] # multi resolution of voxel grid
+        self.grid_mode = "four_volume"  # {'four_volume', 'hexplane', 'mlp'}
         self.no_dx=False # cancel the deformation of Gaussians' position
-        self.no_grid=False # cancel the spatial-temporal hexplane.
+        self.no_grid=False # legacy flag kept for backward compatibility; now aliases legacy hexplane
         self.no_ds=False # cancel the deformation of Gaussians' scaling
         self.no_dr=False # cancel the deformation of Gaussians' rotations
         self.no_do=True # cancel the deformation of Gaussians' opacity     # True
@@ -140,6 +143,14 @@ class ModelHiddenParams(ParamGroup):
 
         
         super().__init__(parser, "ModelHiddenParams")
+
+    def extract(self, args):
+        g = super().extract(args)
+        if isinstance(g.kplanes_config, dict):
+            g.kplanes_config = g.kplanes_config.copy()
+            g.kplanes_config["max_spatial_resolution"] = g.max_spatial_resolution
+            g.kplanes_config["max_time_resolution"] = g.max_time_resolution
+        return g
 
 
 def get_combined_args(parser: ArgumentParser):
