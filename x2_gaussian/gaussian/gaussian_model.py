@@ -109,8 +109,9 @@ class GaussianModel:
         self.grid_mode = getattr(args, "grid_mode", "four_volume")
         if getattr(args, "no_grid", False) and self.grid_mode == "four_volume":
             self.grid_mode = "hexplane"
-        self._deformation = deform_network(args)
+        self._deformation = deform_network(args, static_prior=None)  # Will be set later if use_static_prior
         self._deformation_table = torch.empty(0)
+        self.args = args  # Store args for later use
         self.period = torch.empty(0)
         self.t_seq = torch.linspace(0, args.kplanes_config['resolution'][3]-1, args.kplanes_config['resolution'][3]).cuda()
         self.setup_functions()
@@ -794,7 +795,71 @@ class GaussianModel:
                 total = total + torch.abs(1 - grids[grid_id]).mean()
         return total
     
-    def compute_regulation(self, time_smoothness_weight, l1_time_planes_weight, plane_tv_weight):
+    def _plane_regulation_hexplane_sr(self):
+        """TV regularization for HexPlane-SR static planes (xy, xz, yz)."""
+        grid = self._deformation.deformation_net.grid
+        total = torch.zeros(1, device=self.period.device)
+        # Apply TV to static spatial planes
+        for static_planes in grid.static_grids:
+            for plane in static_planes:
+                total = total + compute_plane_smoothness(plane)
+        return total
+    
+    def _time_regulation_hexplane_sr(self):
+        """TV regularization for HexPlane-SR residual temporal planes (xt, yt, zt)."""
+        grid = self._deformation.deformation_net.grid
+        total = torch.zeros(1, device=self.period.device)
+        # Apply TV to residual temporal planes
+        for residual_planes in grid.residual_grids:
+            for plane in residual_planes:
+                total = total + compute_plane_smoothness(plane)
+        return total
+    
+    def _l1_regulation_hexplane_sr(self):
+        """L1 regularization for HexPlane-SR residual temporal planes (xt, yt, zt)."""
+        grid = self._deformation.deformation_net.grid
+        total = torch.zeros(1, device=self.period.device)
+        # Apply L1 to residual temporal planes (encourage sparsity)
+        for residual_planes in grid.residual_grids:
+            for plane in residual_planes:
+                total = total + torch.abs(plane).mean()
+        return total
+    
+    def _plane_regulation_static_residual(self):
+        grid = self._deformation.deformation_net.grid
+        total = torch.zeros(1, device=self.period.device)
+        # Static 3D volumes
+        for static_vol in grid.static_grids:
+            total = total + _total_variation_nd(static_vol, dims=(2, 3, 4))
+        # Residual temporal volumes (only xyt, xzt, yzt)
+        for level in grid.residual_grids:
+            total = total + _total_variation_nd(level.xyt, dims=(3, 4))
+            total = total + _total_variation_nd(level.xzt, dims=(3, 4))
+            total = total + _total_variation_nd(level.yzt, dims=(3, 4))
+        return total
+    
+    def _time_regulation_static_residual(self):
+        grid = self._deformation.deformation_net.grid
+        total = torch.zeros(1, device=self.period.device)
+        # Only residual temporal volumes have time dimension
+        for level in grid.residual_grids:
+            total = total + _second_order_smoothness(level.xyt, dim=2)
+            total = total + _second_order_smoothness(level.xzt, dim=2)
+            total = total + _second_order_smoothness(level.yzt, dim=2)
+        return total
+    
+    def _l1_regulation_static_residual(self):
+        grid = self._deformation.deformation_net.grid
+        total = torch.zeros(1, device=self.period.device)
+        # Encourage residual temporal volumes to stay close to identity (initialized to small values)
+        for level in grid.residual_grids:
+            total = total + torch.abs(level.xyt).mean()
+            total = total + torch.abs(level.xzt).mean()
+            total = total + torch.abs(level.yzt).mean()
+        return total
+    
+    def compute_regulation(self, time_smoothness_weight, l1_time_planes_weight, plane_tv_weight,
+                          time_weights_sparsity_weight=0.0, time_weights_smoothness_weight=0.0):
         if self.grid_mode == "mlp":
             return torch.zeros(1, device=self.period.device)
         if self.grid_mode == "hexplane":
@@ -803,6 +868,39 @@ class GaussianModel:
                 + time_smoothness_weight * self._time_regulation_hexplane()
                 + l1_time_planes_weight * self._l1_regulation_hexplane()
             )
+        if self.grid_mode == "hexplane_sr":
+            # HexPlane-SR uses dedicated regularization for static/residual planes
+            base_reg = (
+                plane_tv_weight * self._plane_regulation_hexplane_sr()
+                + time_smoothness_weight * self._time_regulation_hexplane_sr()
+                + l1_time_planes_weight * self._l1_regulation_hexplane_sr()
+            )
+            # Add TARS regularization if enabled
+            if hasattr(self._deformation, 'deformation_net') and \
+               hasattr(self._deformation.deformation_net.grid, 'use_time_aware_residual') and \
+               self._deformation.deformation_net.grid.use_time_aware_residual:
+                tars_reg = (
+                    time_weights_sparsity_weight * self._deformation.deformation_net.grid.get_time_weights_sparsity_loss()
+                    + time_weights_smoothness_weight * self._deformation.deformation_net.grid.get_time_weights_smoothness_loss()
+                )
+                return base_reg + tars_reg
+            return base_reg
+        if self.grid_mode == "static_residual_four_volume":
+            base_reg = (
+                plane_tv_weight * self._plane_regulation_static_residual()
+                + time_smoothness_weight * self._time_regulation_static_residual()
+                + l1_time_planes_weight * self._l1_regulation_static_residual()
+            )
+            # Add TARS regularization if enabled
+            if hasattr(self._deformation, 'deformation_net') and \
+               hasattr(self._deformation.deformation_net.grid, 'use_time_aware_residual') and \
+               self._deformation.deformation_net.grid.use_time_aware_residual:
+                tars_reg = (
+                    time_weights_sparsity_weight * self._deformation.deformation_net.grid.get_time_weights_sparsity_loss()
+                    + time_weights_smoothness_weight * self._deformation.deformation_net.grid.get_time_weights_smoothness_loss()
+                )
+                return base_reg + tars_reg
+            return base_reg
         return (
             plane_tv_weight * self._plane_regulation_four_volume()
             + time_smoothness_weight * self._time_regulation_four_volume()

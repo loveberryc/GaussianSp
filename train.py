@@ -45,7 +45,7 @@ def training(
 
     # Set up Gaussians
     gaussians = GaussianModel(scale_bound, hyper)
-    initialize_gaussian(gaussians, dataset, None)
+    initialize_gaussian(gaussians, dataset, None, scene=scene)  # Pass scene for static prior
     scene.gaussians = gaussians
 
     scene_reconstruction(
@@ -210,9 +210,15 @@ def scene_reconstruction(
             loss["tv"] = loss_tv
             loss["total"] = loss["total"] + opt.lambda_tv * loss_tv
 
-        # 4D TV loss
+        # 4D TV loss (including TARS regularization)
         if hyper.time_smoothness_weight != 0 and stage=='fine':
-            tv_loss_4d = gaussians.compute_regulation(hyper.time_smoothness_weight, hyper.l1_time_planes, hyper.plane_tv_weight)
+            tv_loss_4d = gaussians.compute_regulation(
+                hyper.time_smoothness_weight, 
+                hyper.l1_time_planes, 
+                hyper.plane_tv_weight,
+                hyper.time_weights_sparsity_weight,
+                hyper.time_weights_smoothness_weight
+            )
             loss["4d_tv"] = tv_loss_4d
             loss["total"] = loss["total"] + tv_loss_4d
 
@@ -495,7 +501,7 @@ if __name__ == "__main__":
     if args.no_grid:
         print("Detected --no_grid flag: using legacy hexplane grid.")
         args.grid_mode = "hexplane"
-    valid_grid_modes = {"four_volume", "hexplane", "mlp"}
+    valid_grid_modes = {"four_volume", "static_residual_four_volume", "hexplane_sr", "hexplane", "mlp"}
     if args.grid_mode not in valid_grid_modes:
         raise ValueError(f"Unsupported grid_mode '{args.grid_mode}'. Expected one of {sorted(valid_grid_modes)}.")
     args.no_grid = args.grid_mode == "hexplane"

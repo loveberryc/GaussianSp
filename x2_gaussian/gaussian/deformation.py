@@ -14,7 +14,7 @@ from x2_gaussian.gaussian.hexplane import build_feature_grid
 from x2_gaussian.gaussian.grid import DenseGrid
 # from scene.grid import HashHexPlane
 class Deformation(nn.Module):
-    def __init__(self, D=8, W=256, input_ch=27, input_ch_time=9, grid_pe=0, skips=[], args=None):
+    def __init__(self, D=8, W=256, input_ch=27, input_ch_time=9, grid_pe=0, skips=[], args=None, static_prior=None):
         super(Deformation, self).__init__()
         self.D = D
         self.W = W
@@ -27,7 +27,7 @@ class Deformation(nn.Module):
             # Backward compatibility: --no_grid now aliases legacy hexplane.
             self.grid_mode = "hexplane"
         self.no_grid = self.grid_mode == "mlp"
-        self.grid = build_feature_grid(self.grid_mode, args.bounds, args.kplanes_config, args.multires)
+        self.grid = build_feature_grid(self.grid_mode, args.bounds, args.kplanes_config, args.multires, static_prior=static_prior)
         # breakpoint()
         self.args = args
         # self.args.empty_voxel=True
@@ -158,7 +158,7 @@ class Deformation(nn.Module):
         return parameter_list
     
 class deform_network(nn.Module):
-    def __init__(self, args) :
+    def __init__(self, args, static_prior=None) :
         super(deform_network, self).__init__()
         net_width = args.net_width
         timebase_pe = args.timebase_pe
@@ -173,7 +173,7 @@ class deform_network(nn.Module):
         self.timenet = nn.Sequential(
         nn.Linear(times_ch, timenet_width), nn.ReLU(),
         nn.Linear(timenet_width, timenet_output))
-        self.deformation_net = Deformation(W=net_width, D=defor_depth, input_ch=(3)+(3*(posbase_pe))*2, grid_pe=grid_pe, input_ch_time=timenet_output, args=args)
+        self.deformation_net = Deformation(W=net_width, D=defor_depth, input_ch=(3)+(3*(posbase_pe))*2, grid_pe=grid_pe, input_ch_time=timenet_output, args=args, static_prior=static_prior)
         self.register_buffer('time_poc', torch.FloatTensor([(2**i) for i in range(timebase_pe)]))
         self.register_buffer('pos_poc', torch.FloatTensor([(2**i) for i in range(posbase_pe)]))
         self.register_buffer('rotation_scaling_poc', torch.FloatTensor([(2**i) for i in range(scale_rotation_pe)]))

@@ -120,16 +120,36 @@ class ModelHiddenParams(ParamGroup):
         self.period_construction_weight = 1e-5  # useless
         self.max_spatial_resolution = 80
         self.max_time_resolution = 150
+        # Static-residual mode parameters
+        self.static_resolution_multiplier = 1.0  # Static volume resolution multiplier
+        self.residual_resolution_multiplier = 0.5  # Residual volumes use lower resolution to save memory
+        self.residual_weight = 1.0  # Weight for residual contribution
+        self.use_residual_clamp = False  # Whether to clamp residual values
+        self.residual_clamp_value = 2.0  # Clamp range if enabled
+        self.use_static_prior = False  # Whether to initialize static volume from training data mean
+        self.static_prior_resolution = 64  # Resolution for computing static prior
+        # Time-Aware Adaptive Residual Sparsification (TARS) parameters
+        self.use_time_aware_residual = False  # Enable TARS: time-adaptive residual weighting
+        self.time_weights_sparsity_weight = 0.001  # L1 sparsity regularization on time weights
+        self.time_weights_smoothness_weight = 0.01  # Temporal smoothness regularization
+        self.output_coordinate_dim = 32  # Feature dimension for each grid plane
         self.kplanes_config = {
                              'grid_dimensions': 2,
                              'input_coordinate_dim': 4,
-                             'output_coordinate_dim': 32,   # 32
+                             'output_coordinate_dim': self.output_coordinate_dim,   # 32
                              'resolution': [64, 64, 64, 150],  # [64,64,64]: resolution of spatial grid. 25: resolution of temporal grid, better to be half length of dynamic frames
                              'max_spatial_resolution': self.max_spatial_resolution,
                              'max_time_resolution': self.max_time_resolution,
+                             'static_resolution_multiplier': self.static_resolution_multiplier,
+                             'residual_resolution_multiplier': self.residual_resolution_multiplier,
+                             'residual_weight': self.residual_weight,
+                             'use_residual_clamp': self.use_residual_clamp,
+                             'residual_clamp_value': self.residual_clamp_value,
+                             'use_static_prior': self.use_static_prior,
+                             'use_time_aware_residual': self.use_time_aware_residual,  # TARS
                             }    # 150
         self.multires = [1, 2, 4, 8] # multi resolution of voxel grid
-        self.grid_mode = "four_volume"  # {'four_volume', 'hexplane', 'mlp'}
+        self.grid_mode = "four_volume"  # {'four_volume', 'static_residual_four_volume', 'hexplane_sr', 'hexplane', 'mlp'}
         self.no_dx=False # cancel the deformation of Gaussians' position
         self.no_grid=False # legacy flag kept for backward compatibility; now aliases legacy hexplane
         self.no_ds=False # cancel the deformation of Gaussians' scaling
@@ -148,8 +168,19 @@ class ModelHiddenParams(ParamGroup):
         g = super().extract(args)
         if isinstance(g.kplanes_config, dict):
             g.kplanes_config = g.kplanes_config.copy()
+            g.kplanes_config["output_coordinate_dim"] = g.output_coordinate_dim
             g.kplanes_config["max_spatial_resolution"] = g.max_spatial_resolution
             g.kplanes_config["max_time_resolution"] = g.max_time_resolution
+            g.kplanes_config["static_resolution_multiplier"] = g.static_resolution_multiplier
+            g.kplanes_config["residual_resolution_multiplier"] = g.residual_resolution_multiplier
+            g.kplanes_config["residual_weight"] = g.residual_weight
+            g.kplanes_config["use_residual_clamp"] = g.use_residual_clamp
+            g.kplanes_config["residual_clamp_value"] = g.residual_clamp_value
+            g.kplanes_config["use_static_prior"] = g.use_static_prior
+            g.kplanes_config["use_time_aware_residual"] = g.use_time_aware_residual  # TARS
+        # Convert multires to list if it's a string or tuple
+        if hasattr(g, 'multires') and not isinstance(g.multires, list):
+            g.multires = list(g.multires) if isinstance(g.multires, (tuple, list)) else [int(x) for x in str(g.multires).split()]
         return g
 
 

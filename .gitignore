@@ -9,5 +9,6 @@ x2-gaussian-main-origin/
 __pycache__/
 *.pyc
 .cursor/
+.ipynb_checkpoints/
 
 
