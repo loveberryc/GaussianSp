@@ -1,0 +1,28 @@
+# Data files (too large)
+data/
+data/*
+
+# Output files (too large)
+output/
+output/*
+
+# Log files
+*.log
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
