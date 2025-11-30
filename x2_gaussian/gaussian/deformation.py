@@ -118,6 +118,24 @@ class Deformation(nn.Module):
         # Backward deformation head D_b for inverse consistency - used in v7 mode
         self.pos_deform_backward = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 3))
         
+        # V7.4: Additional backward heads for canonical decode of shape and density
+        # These heads decode canonical log-scale and density residuals from the backward trunk
+        self.use_v7_4_canonical_decode = getattr(self.args, 'use_v7_4_canonical_decode', False)
+        # D_b_shape: backward shape decode head (outputs D_scale = 3 for per-axis log-scale residual)
+        self.backward_shape_head = nn.Sequential(
+            nn.ReLU(),
+            nn.Linear(self.W, self.W // 2),
+            nn.ReLU(),
+            nn.Linear(self.W // 2, 3)  # 3D log-scale residual
+        )
+        # D_b_dens: backward density decode head (outputs 1D density residual)
+        self.backward_dens_head = nn.Sequential(
+            nn.ReLU(),
+            nn.Linear(self.W, self.W // 2),
+            nn.ReLU(),
+            nn.Linear(self.W // 2, 1)  # 1D density residual
+        )
+        
         # v8: Phase-conditioned heads (input dim = W + 2 for phase embedding)
         if self.use_phase_conditioned_deformation:
             phase_input_dim = self.W + 2  # trunk output + [sin(phi), cos(phi)]
@@ -737,6 +755,48 @@ class Deformation(nn.Module):
         reconstructed_pts = deformed_pts[:,:3] + db
         
         return reconstructed_pts, db
+
+    def backward_deform_full(self, deformed_pts, time_emb):
+        """
+        V7.4: Full backward decode including position, shape, and density residuals.
+        
+        Uses the shared backward trunk to compute features, then applies separate
+        heads for position (existing), shape (new), and density (new) decode.
+        
+        Args:
+            deformed_pts: Dynamic positions at time t (shape: [N, 3])
+            time_emb: Time embedding (shape: [N, 1])
+        
+        Returns:
+            D_b_pos: Position residual for canonical center decode (N, 3)
+            D_b_shape: Log-scale residual for canonical shape decode (N, 3)
+            D_b_dens: Density residual for canonical density decode (N, 1)
+        """
+        # Compute shared trunk features (same as in forward_backward_position)
+        if self.no_grid:
+            h = torch.cat([deformed_pts[:,:3], time_emb[:,:1]], -1)
+        else:
+            grid_feature = self.grid(deformed_pts[:,:3], time_emb[:,:1])
+            if self.grid_pe > 1:
+                grid_feature = poc_fre(grid_feature, self.grid_pe)
+            h = torch.cat([grid_feature], -1)
+        
+        hidden = self.feature_out(h)
+        
+        # Position head (existing behavior)
+        if self.use_phase_conditioned_deformation:
+            phase_embed = self.compute_phase_embedding(time_emb)  # [N, 2]
+            hidden_aug = torch.cat([hidden, phase_embed], dim=-1)  # [N, W+2]
+            D_b_pos = self.pos_deform_backward_phase(hidden_aug)  # [N, 3]
+        else:
+            D_b_pos = self.pos_deform_backward(hidden)  # [N, 3]
+        
+        # V7.4: Shape and density heads (use base hidden, not phase-augmented)
+        # These heads decode canonical residuals from the shared trunk
+        D_b_shape = self.backward_shape_head(hidden)  # [N, 3]
+        D_b_dens = self.backward_dens_head(hidden)    # [N, 1]
+        
+        return D_b_pos, D_b_shape, D_b_dens
     
     def get_mlp_parameters(self):
         parameter_list = []
@@ -842,6 +902,21 @@ class deform_network(nn.Module):
             backward_deform: The backward deformation D_b(y, t)
         """
         return self.deformation_net.forward_backward_position(deformed_pts, times_sel)
+
+    def backward_deform_full(self, deformed_pts, times_sel):
+        """
+        V7.4: Full backward decode including position, shape, and density residuals.
+        
+        Args:
+            deformed_pts: Dynamic positions at time t (shape: [N, 3])
+            times_sel: Time values (shape: [N, 1])
+        
+        Returns:
+            D_b_pos: Position residual for canonical center decode (N, 3)
+            D_b_shape: Log-scale residual for canonical shape decode (N, 3)
+            D_b_dens: Density residual for canonical density decode (N, 1)
+        """
+        return self.deformation_net.backward_deform_full(deformed_pts, times_sel)
     
     def get_mlp_parameters(self):
         return self.deformation_net.get_mlp_parameters() + list(self.timenet.parameters())

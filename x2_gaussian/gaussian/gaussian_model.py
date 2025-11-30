@@ -38,6 +38,100 @@ from x2_gaussian.gaussian.regulation import compute_plane_smoothness
 EPS = 1e-5
 
 
+# ============================================================================
+# V7.1 Alpha Network Classes for time-dependent α(t)
+# ============================================================================
+
+class AlphaNetworkFourier(nn.Module):
+    """
+    Fourier basis network for time-dependent alpha.
+    α(t) = α_0 + Σ (a_k * sin(2πk*t) + b_k * cos(2πk*t))
+    Output is clamped to [0, 1].
+    """
+    def __init__(self, num_freqs=4, alpha_init=0.0):
+        super().__init__()
+        self.num_freqs = num_freqs
+        self.alpha_init = alpha_init
+        
+        # Learnable coefficients: [a_1, ..., a_K, b_1, ..., b_K]
+        # Initialize to small random values
+        self.coeffs = nn.Parameter(torch.zeros(num_freqs * 2) * 0.01)
+        # Learnable bias (base alpha)
+        self.bias = nn.Parameter(torch.tensor(alpha_init))
+        
+    def forward(self, t):
+        """
+        Args:
+            t: time value in [0, 1], can be scalar or tensor
+        Returns:
+            alpha: time-dependent alpha value(s)
+        """
+        if not isinstance(t, torch.Tensor):
+            t = torch.tensor(t, device=self.coeffs.device, dtype=torch.float32)
+        
+        # Compute Fourier features
+        freqs = torch.arange(1, self.num_freqs + 1, device=t.device, dtype=torch.float32)
+        # [num_freqs] or broadcast for batch
+        phases = 2 * math.pi * freqs * t.unsqueeze(-1) if t.dim() > 0 else 2 * math.pi * freqs * t
+        
+        sin_features = torch.sin(phases)  # [num_freqs] or [batch, num_freqs]
+        cos_features = torch.cos(phases)
+        
+        # Combine with coefficients
+        a_coeffs = self.coeffs[:self.num_freqs]
+        b_coeffs = self.coeffs[self.num_freqs:]
+        
+        alpha = self.bias + (a_coeffs * sin_features).sum(-1) + (b_coeffs * cos_features).sum(-1)
+        
+        # Clamp to valid range
+        alpha = torch.clamp(alpha, 0.0, 1.0)
+        return alpha
+
+
+class AlphaNetworkMLP(nn.Module):
+    """
+    Small MLP network for time-dependent alpha.
+    Input: t (normalized time)
+    Output: α(t) in [0, 1]
+    """
+    def __init__(self, hidden_dim=32, alpha_init=0.0):
+        super().__init__()
+        self.alpha_init = alpha_init
+        
+        self.net = nn.Sequential(
+            nn.Linear(1, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+        )
+        
+        # Initialize last layer to output alpha_init
+        nn.init.zeros_(self.net[-1].weight)
+        nn.init.constant_(self.net[-1].bias, alpha_init)
+        
+    def forward(self, t):
+        """
+        Args:
+            t: time value in [0, 1], can be scalar or tensor
+        Returns:
+            alpha: time-dependent alpha value(s)
+        """
+        if not isinstance(t, torch.Tensor):
+            t = torch.tensor(t, device=next(self.parameters()).device, dtype=torch.float32)
+        
+        if t.dim() == 0:
+            t = t.unsqueeze(0)
+        
+        t_input = t.view(-1, 1)
+        alpha = self.net(t_input).squeeze(-1)
+        
+        # Clamp to valid range using sigmoid
+        alpha = torch.sigmoid(alpha)
+        
+        return alpha if alpha.numel() > 1 else alpha.squeeze()
+
+
 class GaussianModel:
     def setup_functions(self):
         def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
@@ -94,6 +188,118 @@ class GaussianModel:
         # v10: Adaptive Gating parameters
         self.use_adaptive_gating = getattr(args, 'use_adaptive_gating', False)
         self._motion_modes = torch.empty(0)  # U: [K, M, 3] per-Gaussian motion modes
+        
+        # V7.1: Alpha parameters for consistency-aware rendering
+        self.use_trainable_alpha = getattr(args, 'use_trainable_alpha', False)
+        self.trainable_alpha_init = getattr(args, 'trainable_alpha_init', 0.0)
+        self.trainable_alpha_reg = getattr(args, 'trainable_alpha_reg', 1e-3)
+        self.use_time_dependent_alpha = getattr(args, 'use_time_dependent_alpha', False)
+        self.alpha_network_type = getattr(args, 'alpha_network_type', 'fourier')
+        
+        # V7.2: End-to-End Consistency-Aware parameters
+        self.use_v7_2_consistency = getattr(args, 'use_v7_2_consistency', False)
+        self.v7_2_alpha_init = getattr(args, 'v7_2_alpha_init', 0.3)
+        self.v7_2_alpha_learnable = getattr(args, 'v7_2_alpha_learnable', True)
+        self.v7_2_lambda_b_reg = getattr(args, 'v7_2_lambda_b_reg', 1e-3)
+        self.v7_2_lambda_alpha_reg = getattr(args, 'v7_2_lambda_alpha_reg', 1e-3)
+        # V7.2 time-dependent alpha parameters
+        self.v7_2_use_time_dependent_alpha = getattr(args, 'v7_2_use_time_dependent_alpha', False)
+        self.v7_2_alpha_network_type = getattr(args, 'v7_2_alpha_network_type', 'fourier')
+        
+        # Initialize alpha parameter or network
+        self._alpha = None  # Will be initialized as nn.Parameter if use_trainable_alpha
+        self._alpha_network = None  # Will be initialized if use_time_dependent_alpha
+        self._v7_2_alpha = None  # V7.2 specific alpha parameter (scalar)
+        self._v7_2_alpha_network = None  # V7.2 specific alpha network (time-dependent)
+        
+        # V7.2 alpha initialization (takes priority over V7.1 if both enabled)
+        if self.use_v7_2_consistency:
+            if self.v7_2_use_time_dependent_alpha:
+                # V7.2 with time-dependent alpha: use a small network g_theta(t)
+                if self.v7_2_alpha_network_type == 'fourier':
+                    num_freqs = getattr(args, 'v7_2_alpha_fourier_freqs', 4)
+                    self._v7_2_alpha_network = AlphaNetworkFourier(
+                        num_freqs=num_freqs,
+                        alpha_init=self.v7_2_alpha_init
+                    ).cuda()
+                elif self.v7_2_alpha_network_type == 'mlp':
+                    hidden_dim = getattr(args, 'v7_2_alpha_mlp_hidden', 32)
+                    self._v7_2_alpha_network = AlphaNetworkMLP(
+                        hidden_dim=hidden_dim,
+                        alpha_init=self.v7_2_alpha_init
+                    ).cuda()
+                print(f"[V7.2] Initialized time-dependent alpha network ({self.v7_2_alpha_network_type}), init={self.v7_2_alpha_init}")
+            elif self.v7_2_alpha_learnable:
+                # V7.2 with learnable scalar alpha
+                self._v7_2_alpha = nn.Parameter(
+                    torch.tensor(self.v7_2_alpha_init, device="cuda", dtype=torch.float32)
+                )
+                print(f"[V7.2] Initialized learnable scalar alpha = {self.v7_2_alpha_init}")
+            else:
+                # V7.2 with fixed alpha
+                self.register_buffer(
+                    "_v7_2_alpha", 
+                    torch.tensor(self.v7_2_alpha_init, device="cuda", dtype=torch.float32)
+                )
+                print(f"[V7.2] Initialized fixed alpha = {self.v7_2_alpha_init}")
+        elif self.use_trainable_alpha:
+            if self.use_time_dependent_alpha:
+                # Time-dependent alpha: use a small network
+                if self.alpha_network_type == 'fourier':
+                    num_freqs = getattr(args, 'alpha_fourier_freqs', 4)
+                    self._alpha_network = AlphaNetworkFourier(
+                        num_freqs=num_freqs, 
+                        alpha_init=self.trainable_alpha_init
+                    ).cuda()
+                elif self.alpha_network_type == 'mlp':
+                    hidden_dim = getattr(args, 'alpha_mlp_hidden', 32)
+                    self._alpha_network = AlphaNetworkMLP(
+                        hidden_dim=hidden_dim,
+                        alpha_init=self.trainable_alpha_init
+                    ).cuda()
+                print(f"[V7.1] Initialized time-dependent alpha network ({self.alpha_network_type})")
+            else:
+                # Global scalar alpha
+                self._alpha = nn.Parameter(
+                    torch.tensor(self.trainable_alpha_init, device="cuda", dtype=torch.float32)
+                )
+                print(f"[V7.1] Initialized trainable alpha = {self.trainable_alpha_init}")
+        
+        # V7.5: Forward timewarp decoder heads for shape and density
+        # These are used ONLY for computing time-warp consistency losses (not for rendering)
+        # Input: canonical code (log-scale or density) + time embedding -> predicted dynamic value
+        self.use_v7_5_full_timewarp = getattr(args, 'use_v7_5_full_timewarp', False)
+        self._v7_5_time_embed_dim = 16
+        self._v7_5_shape_dim = 3  # log-scale is 3D
+        
+        if self.use_v7_5_full_timewarp:
+            # Time embedding MLP: t -> time_embed
+            self._v7_5_time_mlp = nn.Sequential(
+                nn.Linear(1, 32),
+                nn.ReLU(inplace=True),
+                nn.Linear(32, self._v7_5_time_embed_dim),
+                nn.ReLU(inplace=True),
+            ).cuda()
+            
+            # Shape timewarp head: canonical log-scale + time_embed -> predicted log-scale
+            self._v7_5_shape_timewarp_head = nn.Sequential(
+                nn.Linear(self._v7_5_time_embed_dim + self._v7_5_shape_dim, 64),
+                nn.ReLU(inplace=True),
+                nn.Linear(64, self._v7_5_shape_dim),
+            ).cuda()
+            
+            # Density timewarp head: canonical density + time_embed -> predicted density
+            self._v7_5_dens_timewarp_head = nn.Sequential(
+                nn.Linear(self._v7_5_time_embed_dim + 1, 64),
+                nn.ReLU(inplace=True),
+                nn.Linear(64, 1),
+            ).cuda()
+            
+            print(f"[V7.5] Initialized forward timewarp decoders for shape (3D) and density (1D)")
+        else:
+            self._v7_5_time_mlp = None
+            self._v7_5_shape_timewarp_head = None
+            self._v7_5_dens_timewarp_head = None
         
         self.setup_functions()
 
@@ -314,6 +520,62 @@ class GaussianModel:
                 "lr": training_args.deformation_lr_init * self.spatial_lr_scale,
                 "name": "motion_modes",
             })
+        
+        # V7.2: Add alpha to optimizer
+        if self.use_v7_2_consistency:
+            if self.v7_2_use_time_dependent_alpha and self._v7_2_alpha_network is not None:
+                # V7.2 with time-dependent alpha network
+                l.append({
+                    "params": list(self._v7_2_alpha_network.parameters()),
+                    "lr": training_args.deformation_lr_init * self.spatial_lr_scale,
+                    "name": "v7_2_alpha_network",
+                })
+                print(f"[V7.2] Added time-dependent alpha network to optimizer")
+            elif self.v7_2_alpha_learnable and self._v7_2_alpha is not None:
+                # V7.2 with learnable scalar alpha
+                l.append({
+                    "params": [self._v7_2_alpha],
+                    "lr": 1e-2,  # Fixed learning rate for V7.2 alpha
+                    "name": "v7_2_alpha",
+                })
+                print(f"[V7.2] Added learnable scalar alpha to optimizer")
+        # V7.1: Add alpha parameters to optimizer if using trainable alpha
+        elif self.use_trainable_alpha:
+            if self.use_time_dependent_alpha and self._alpha_network is not None:
+                # Time-dependent alpha network
+                l.append({
+                    "params": list(self._alpha_network.parameters()),
+                    "lr": training_args.deformation_lr_init * self.spatial_lr_scale,
+                    "name": "alpha_network",
+                })
+                print(f"[V7.1] Added alpha network parameters to optimizer")
+            elif self._alpha is not None:
+                # Global scalar alpha
+                l.append({
+                    "params": [self._alpha],
+                    "lr": 1e-2,  # Fixed learning rate for scalar alpha
+                    "name": "alpha",
+                })
+                print(f"[V7.1] Added scalar alpha to optimizer")
+        
+        # V7.5: Add timewarp decoders to optimizer
+        if self.use_v7_5_full_timewarp and self._v7_5_time_mlp is not None:
+            l.append({
+                "params": list(self._v7_5_time_mlp.parameters()),
+                "lr": training_args.deformation_lr_init * self.spatial_lr_scale,
+                "name": "v7_5_time_mlp",
+            })
+            l.append({
+                "params": list(self._v7_5_shape_timewarp_head.parameters()),
+                "lr": training_args.deformation_lr_init * self.spatial_lr_scale,
+                "name": "v7_5_shape_timewarp_head",
+            })
+            l.append({
+                "params": list(self._v7_5_dens_timewarp_head.parameters()),
+                "lr": training_args.deformation_lr_init * self.spatial_lr_scale,
+                "name": "v7_5_dens_timewarp_head",
+            })
+            print(f"[V7.5] Added timewarp decoder parameters to optimizer")
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         self.xyz_scheduler_args = get_expon_lr_func(
@@ -405,12 +667,34 @@ class GaussianModel:
         if os.path.exists(os.path.join(path, "deformation_accum.pth")):
             self._deformation_accum = torch.load(os.path.join(path, "deformation_accum.pth"),map_location="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
-        # print(self._deformation.deformation_net.grid.)
+        
+        # V7.1: Load alpha parameters if they exist
+        alpha_path = os.path.join(path, "alpha.pth")
+        if os.path.exists(alpha_path):
+            alpha_state = torch.load(alpha_path, map_location="cuda")
+            if "alpha" in alpha_state and self._alpha is not None:
+                self._alpha.data = alpha_state["alpha"]
+                print(f"[V7.1] Loaded scalar alpha = {self._alpha.item():.4f}")
+            if "alpha_network" in alpha_state and self._alpha_network is not None:
+                self._alpha_network.load_state_dict(alpha_state["alpha_network"])
+                print(f"[V7.1] Loaded alpha network state")
 
     def save_deformation(self, path):
         torch.save(self._deformation.state_dict(),os.path.join(path, "deformation.pth"))
         torch.save(self._deformation_table,os.path.join(path, "deformation_table.pth"))
         torch.save(self._deformation_accum,os.path.join(path, "deformation_accum.pth"))
+        
+        # V7.1: Save alpha parameters if using trainable alpha
+        if self.use_trainable_alpha:
+            alpha_state = {}
+            if self._alpha is not None:
+                alpha_state["alpha"] = self._alpha.data
+                print(f"[V7.1] Saved scalar alpha = {self._alpha.item():.4f}")
+            if self._alpha_network is not None:
+                alpha_state["alpha_network"] = self._alpha_network.state_dict()
+                print(f"[V7.1] Saved alpha network state")
+            if alpha_state:
+                torch.save(alpha_state, os.path.join(path, "alpha.pth"))
 
     def save_ply(self, path):
         # We save pickle files to store more information
@@ -827,6 +1111,270 @@ class GaussianModel:
     def compute_regulation(self, time_smoothness_weight, l1_time_planes_weight, plane_tv_weight):
         return plane_tv_weight * self._plane_regulation() + time_smoothness_weight * self._time_regulation() + l1_time_planes_weight * self._l1_regulation()
 
+    def get_alpha(self, time=None):
+        """
+        Get the current alpha value for V7.1 correction.
+        
+        If use_trainable_alpha is False, returns None.
+        If use_time_dependent_alpha is True, returns alpha(t) from the network.
+        Otherwise, returns the global scalar alpha.
+        
+        Args:
+            time: Normalized time value (only used if time-dependent alpha is enabled)
+        
+        Returns:
+            alpha: Scalar or tensor alpha value, or None if not using trainable alpha
+        """
+        if not self.use_trainable_alpha:
+            return None
+        
+        if self.use_time_dependent_alpha and self._alpha_network is not None:
+            if time is None:
+                time = 0.5  # Default to mid-point if time not provided
+            return self._alpha_network(time)
+        elif self._alpha is not None:
+            return self._alpha
+        
+        return None
+    
+    def compute_alpha_regularization_loss(self):
+        """
+        Compute L2 regularization loss for trainable alpha.
+        
+        L_alpha_reg = lambda_alpha * (alpha - alpha_init)^2
+        
+        For time-dependent alpha, this regularizes the network parameters
+        to keep alpha(t) close to alpha_init for all t.
+        
+        Returns:
+            Scalar regularization loss, or 0 if not using trainable alpha
+        """
+        if not self.use_trainable_alpha:
+            return torch.tensor(0.0, device="cuda")
+        
+        if self.use_time_dependent_alpha and self._alpha_network is not None:
+            # Sample alpha at multiple time points and regularize
+            t_samples = torch.linspace(0, 1, 10, device="cuda")
+            alpha_samples = self._alpha_network(t_samples)
+            reg_loss = self.trainable_alpha_reg * ((alpha_samples - self.trainable_alpha_init) ** 2).mean()
+            return reg_loss
+        elif self._alpha is not None:
+            reg_loss = self.trainable_alpha_reg * (self._alpha - self.trainable_alpha_init) ** 2
+            return reg_loss
+        
+        return torch.tensor(0.0, device="cuda")
+
+    def get_v7_2_alpha(self, time=None):
+        """
+        Get the current V7.2 alpha value.
+        
+        Args:
+            time: Time value (scalar or tensor) for time-dependent alpha.
+                  If None and using time-dependent alpha, returns mean alpha.
+        
+        Returns:
+            alpha: Scalar tensor if V7.2 is enabled, None otherwise
+        """
+        if not self.use_v7_2_consistency:
+            return None
+        
+        if self.v7_2_use_time_dependent_alpha and self._v7_2_alpha_network is not None:
+            # Time-dependent alpha from network
+            if time is not None:
+                if isinstance(time, (int, float)):
+                    time = torch.tensor([time], device="cuda", dtype=torch.float32)
+                elif time.dim() == 0:
+                    time = time.unsqueeze(0)
+                # Take the first time value if multiple (for scalar alpha return)
+                t_scalar = time[0] if time.numel() > 1 else time
+                return self._v7_2_alpha_network(t_scalar.view(1)).squeeze()
+            else:
+                # Return mean alpha over time range
+                t_samples = torch.linspace(0, 1, 10, device="cuda")
+                return self._v7_2_alpha_network(t_samples).mean()
+        elif self._v7_2_alpha is not None:
+            return self._v7_2_alpha
+        
+        return None
+
+    def get_deformed_centers(self, time, use_v7_1_correction=False, correction_alpha=0.0):
+        """
+        Get deformed Gaussian centers with optional V7.1/V7.2 consistency-aware correction.
+        
+        V7.1 extends V7 by using the backward field D_b to "correct" the forward
+        deformed centers during rendering. The corrected center is computed as:
+            y_i = mu_i + D_f(mu_i, t)            # V7 forward deformation
+            x_hat_i = y_i + D_b(y_i, t)          # Round-trip back to canonical
+            r_i = x_hat_i - mu_i                 # Round-trip residual
+            y_corrected = y_i - alpha * r_i     # Corrected center
+        
+        V7.2 is similar but uses its own internal alpha parameter and is applied
+        both during training and testing (end-to-end).
+        
+        When use_v7_1_correction=False AND use_v7_2_consistency=False, returns V7 behavior.
+        
+        Args:
+            time: Time tensor (shape: [N, 1]) where N is number of Gaussians
+            use_v7_1_correction: If True, apply V7.1 correction (external alpha)
+            correction_alpha: Alpha coefficient for V7.1 correction (0=V7, >0=V7.1)
+                             If None, uses trainable alpha (if enabled)
+        
+        Returns:
+            means3D_final: Deformed (and optionally corrected) centers [N, 3]
+            scales_final: Deformed scales (raw, before activation) [N, 3]
+            rotations_final: Deformed rotations (raw, before activation) [N, 4]
+        """
+        means3D = self.get_xyz  # [N, 3] canonical positions
+        density = self.get_density
+        scales = self._scaling
+        rotations = self._rotation
+        
+        # Ensure time has correct shape
+        if time.dim() == 0:
+            time = time.unsqueeze(0).unsqueeze(0).repeat(means3D.shape[0], 1)
+        elif time.dim() == 1:
+            time = time.unsqueeze(1)
+        if time.shape[0] == 1:
+            time = time.repeat(means3D.shape[0], 1)
+        
+        # Step 1: V7 forward deformation
+        # y = mu + D_f(mu, t)
+        means3D_deformed, scales_deformed, rotations_deformed = self._deformation(
+            means3D, scales, rotations, density, time
+        )
+        
+        # Determine if we need correction
+        # V7.2 takes priority: if enabled, always apply correction with internal alpha
+        apply_correction = False
+        alpha = 0.0
+        
+        if self.use_v7_2_consistency:
+            # V7.2: Use internal alpha for end-to-end training
+            if self.v7_2_use_time_dependent_alpha and self._v7_2_alpha_network is not None:
+                # Time-dependent alpha: get alpha(t) from network
+                # Use first time value (all Gaussians share the same time in a single render)
+                t_scalar = time[0, 0] if time.dim() == 2 else time[0]
+                alpha = self._v7_2_alpha_network(t_scalar.view(1)).squeeze()
+                apply_correction = True
+            elif self._v7_2_alpha is not None:
+                # Scalar alpha
+                alpha = self._v7_2_alpha
+                apply_correction = True
+        elif use_v7_1_correction and correction_alpha != 0.0:
+            # V7.1: Use external alpha (for evaluation/TTO)
+            apply_correction = True
+            alpha = correction_alpha
+        
+        # If no correction needed, return V7 result directly
+        if not apply_correction:
+            return means3D_deformed, scales_deformed, rotations_deformed
+        
+        # Step 2: Correction using backward field
+        # x_hat = y + D_b(y, t)
+        means3D_reconstructed, _ = self._deformation.forward_backward_position(
+            means3D_deformed, time
+        )
+        
+        # Step 3: Compute round-trip residual
+        # r = x_hat - mu
+        residual = means3D_reconstructed - means3D  # [N, 3]
+        
+        # Step 4: Apply correction
+        # y_corrected = y - alpha * r
+        means3D_corrected = means3D_deformed - alpha * residual  # [N, 3]
+        
+        return means3D_corrected, scales_deformed, rotations_deformed
+
+    def compute_backward_magnitude_loss(self, time, sample_ratio=0.1):
+        """
+        Compute V7.2 backward field magnitude regularization loss.
+        
+        L_b = mean |D_b(y, t)|
+        
+        This prevents D_b from growing too large while allowing it to participate
+        in the main rendering path via the consistency-aware forward mapping.
+        
+        Args:
+            time: Time tensor (shape: [N, 1]) where N is number of Gaussians
+            sample_ratio: Ratio of Gaussians to sample for efficiency (default 0.1)
+        
+        Returns:
+            L_b: Scalar loss value
+        """
+        means3D = self.get_xyz  # [N, 3] canonical positions
+        density = self.get_density
+        scales = self._scaling
+        rotations = self._rotation
+        
+        # Sample a subset of Gaussians if sample_ratio < 1.0
+        num_gaussians = means3D.shape[0]
+        if sample_ratio < 1.0 and sample_ratio > 0:
+            num_samples = max(1, int(num_gaussians * sample_ratio))
+            indices = torch.randperm(num_gaussians, device=means3D.device)[:num_samples]
+            means3D_sampled = means3D[indices]
+            density_sampled = density[indices]
+            scales_sampled = scales[indices]
+            rotations_sampled = rotations[indices]
+            time_sampled = time[indices] if time.shape[0] == num_gaussians else time[:num_samples]
+        else:
+            means3D_sampled = means3D
+            density_sampled = density
+            scales_sampled = scales
+            rotations_sampled = rotations
+            time_sampled = time
+        
+        # Ensure time has correct shape
+        if time_sampled.dim() == 0:
+            time_sampled = time_sampled.unsqueeze(0).unsqueeze(0).repeat(means3D_sampled.shape[0], 1)
+        elif time_sampled.dim() == 1:
+            time_sampled = time_sampled.unsqueeze(1)
+        if time_sampled.shape[0] == 1:
+            time_sampled = time_sampled.repeat(means3D_sampled.shape[0], 1)
+        
+        # Step 1: Forward deformation to get y = mu + D_f(mu, t)
+        means3D_deformed, _, _ = self._deformation(
+            means3D_sampled, scales_sampled, rotations_sampled, density_sampled, time_sampled
+        )
+        
+        # Step 2: Get D_b(y, t) - the backward displacement at deformed position
+        _, D_b = self._deformation.forward_backward_position(
+            means3D_deformed, time_sampled
+        )
+        
+        # Step 3: Compute L1 magnitude of D_b
+        L_b = torch.abs(D_b).mean()
+        
+        return L_b
+
+    def compute_v7_2_alpha_regularization_loss(self):
+        """
+        Compute V7.2 alpha regularization loss.
+        
+        L_alpha = (alpha - alpha_init)^2
+        
+        For time-dependent alpha: L_alpha = mean_t (alpha(t) - alpha_init)^2
+        
+        This keeps alpha close to its initial value to prevent extreme correction.
+        
+        Returns:
+            Scalar regularization loss, or 0 if V7.2 is not enabled
+        """
+        if not self.use_v7_2_consistency:
+            return torch.tensor(0.0, device="cuda")
+        
+        if self.v7_2_use_time_dependent_alpha and self._v7_2_alpha_network is not None:
+            # Time-dependent alpha: sample at multiple time points and regularize
+            t_samples = torch.linspace(0, 1, 10, device="cuda")
+            alpha_samples = self._v7_2_alpha_network(t_samples)
+            reg_loss = ((alpha_samples - self.v7_2_alpha_init) ** 2).mean()
+            return reg_loss
+        elif self._v7_2_alpha is not None and self.v7_2_alpha_learnable:
+            # Scalar alpha
+            reg_loss = (self._v7_2_alpha - self.v7_2_alpha_init) ** 2
+            return reg_loss
+        
+        return torch.tensor(0.0, device="cuda")
+
     def compute_inverse_consistency_loss(self, time, sample_ratio=1.0, compute_symmetry=False):
         """
         Compute inverse consistency loss and optionally symmetry loss for position deformation.
@@ -966,22 +1514,943 @@ class GaussianModel:
         time_plus_T = time_sampled + T_hat
         
         # Step 1: Forward deformation at time t
-        # x1 = mu_i + D_f(mu_i, t)
+        # y1 = mu_i + D_f(mu_i, t)
         means3D_t, _, _ = self._deformation(
             means3D_sampled, scales_sampled, rotations_sampled, density_sampled, time_sampled
         )
         
         # Step 2: Forward deformation at time t + T_hat
-        # x2 = mu_i + D_f(mu_i, t + T_hat)
+        # y2 = mu_i + D_f(mu_i, t + T_hat)
         means3D_t_plus_T, _, _ = self._deformation(
             means3D_sampled, scales_sampled, rotations_sampled, density_sampled, time_plus_T
         )
         
-        # Step 3: Compute L1 loss between x1 and x2
-        # L_cycle_motion = || x2 - x1 ||_1
+        # V7.2: Apply consistency-aware correction if enabled
+        # Use y_corrected = y - alpha * r instead of y
+        if self.use_v7_2_consistency:
+            # Get alpha (scalar or time-dependent)
+            if self.v7_2_use_time_dependent_alpha and self._v7_2_alpha_network is not None:
+                t_scalar = time_sampled[0, 0] if time_sampled.dim() == 2 else time_sampled[0]
+                alpha_t = self._v7_2_alpha_network(t_scalar.view(1)).squeeze()
+                t_plus_T_scalar = time_plus_T[0, 0] if time_plus_T.dim() == 2 else time_plus_T[0]
+                alpha_t_plus_T = self._v7_2_alpha_network(t_plus_T_scalar.view(1)).squeeze()
+            elif self._v7_2_alpha is not None:
+                alpha_t = self._v7_2_alpha
+                alpha_t_plus_T = self._v7_2_alpha
+            else:
+                alpha_t = None
+            
+            if alpha_t is not None:
+                # Correction at time t
+                means3D_reconstructed_t, _ = self._deformation.forward_backward_position(
+                    means3D_t, time_sampled
+                )
+                residual_t = means3D_reconstructed_t - means3D_sampled
+                means3D_t = means3D_t - alpha_t * residual_t
+                
+                # Correction at time t + T_hat
+                means3D_reconstructed_t_plus_T, _ = self._deformation.forward_backward_position(
+                    means3D_t_plus_T, time_plus_T
+                )
+                residual_t_plus_T = means3D_reconstructed_t_plus_T - means3D_sampled
+                means3D_t_plus_T = means3D_t_plus_T - alpha_t_plus_T * residual_t_plus_T
+        
+        # Step 3: Compute L1 loss between positions at t and t + T_hat
+        # L_cycle_motion = || y_corrected(t+T) - y_corrected(t) ||_1 (V7.2)
+        # L_cycle_motion = || y(t+T) - y(t) ||_1 (original V7)
         L_cycle_motion = torch.abs(means3D_t_plus_T - means3D_t).mean()
         
         return L_cycle_motion
+
+    def compute_cycle_canon_loss(self, time, sample_ratio=1.0):
+        """
+        Compute V7.2.1 canonical-space cycle consistency loss (L_cycle-canon).
+        
+        This loss requires that the same physical point μ_i, when decoded back to
+        canonical space via D_b at two times t and t+T̂, should yield consistent results.
+        
+        Unlike L_inv which forces x̂ = μ (r → 0), this only requires:
+            x_canon(t+T̂) ≈ x_canon(t)
+        
+        where:
+            x_canon(t)   = ϕ̃_f(μ, t)   + D_b(ϕ̃_f(μ, t),   t)
+            x_canon(t+T) = ϕ̃_f(μ, t+T) + D_b(ϕ̃_f(μ, t+T), t+T)
+        
+        This provides a softer temporal constraint on D_b without enforcing perfect
+        inverse consistency, allowing the correction mechanism to work effectively.
+        
+        Note: This loss uses the V7.2 corrected centers (y_corrected) as input to D_b,
+        which is consistent with how rendering and L_cycle_motion use them.
+        
+        Args:
+            time: Time samples [N, 1] or [1, 1] (will be broadcast)
+            sample_ratio: Fraction of Gaussians to sample (default: 1.0 = all)
+        
+        Returns:
+            L_cycle_canon: Scalar canonical-space cycle consistency loss
+        """
+        means3D = self.get_xyz  # [N, 3] canonical positions
+        density = self.get_density
+        scales = self._scaling
+        rotations = self._rotation
+        
+        # Get the learned period T_hat = exp(period)
+        T_hat = torch.exp(self.period)  # [1]
+        
+        # Sample a subset of Gaussians if sample_ratio < 1.0
+        num_gaussians = means3D.shape[0]
+        if sample_ratio < 1.0 and sample_ratio > 0:
+            num_samples = max(1, int(num_gaussians * sample_ratio))
+            indices = torch.randperm(num_gaussians, device=means3D.device)[:num_samples]
+            means3D_sampled = means3D[indices]
+            density_sampled = density[indices]
+            scales_sampled = scales[indices]
+            rotations_sampled = rotations[indices]
+            time_sampled = time[indices] if time.shape[0] == num_gaussians else time[:num_samples]
+        else:
+            means3D_sampled = means3D
+            density_sampled = density
+            scales_sampled = scales
+            rotations_sampled = rotations
+            time_sampled = time
+        
+        # Ensure time has correct shape
+        if time_sampled.dim() == 0:
+            time_sampled = time_sampled.unsqueeze(0).unsqueeze(0).repeat(means3D_sampled.shape[0], 1)
+        elif time_sampled.dim() == 1:
+            time_sampled = time_sampled.unsqueeze(1)
+        if time_sampled.shape[0] == 1:
+            time_sampled = time_sampled.repeat(means3D_sampled.shape[0], 1)
+        
+        # Compute time shifted by one period: t + T_hat
+        time_plus_T = time_sampled + T_hat
+        
+        # Step 1: Get V7.2 corrected forward centers at t and t+T̂
+        # These are ϕ̃_f(μ, t) and ϕ̃_f(μ, t+T̂) - already include the correction
+        # We use get_deformed_centers which returns y_corrected when V7.2 is enabled
+        
+        # For efficiency, we compute forward deformation and correction inline
+        # (similar to compute_cycle_motion_loss)
+        
+        # Forward deformation at time t: y(t) = μ + D_f(μ, t)
+        means3D_t, _, _ = self._deformation(
+            means3D_sampled, scales_sampled, rotations_sampled, density_sampled, time_sampled
+        )
+        
+        # Forward deformation at time t + T_hat: y(t+T) = μ + D_f(μ, t+T)
+        means3D_t_plus_T, _, _ = self._deformation(
+            means3D_sampled, scales_sampled, rotations_sampled, density_sampled, time_plus_T
+        )
+        
+        # Apply V7.2 correction to get ϕ̃_f(μ, t) and ϕ̃_f(μ, t+T̂)
+        # (This is the same correction logic as in compute_cycle_motion_loss)
+        if self.use_v7_2_consistency:
+            # Get alpha (scalar or time-dependent)
+            if self.v7_2_use_time_dependent_alpha and self._v7_2_alpha_network is not None:
+                t_scalar = time_sampled[0, 0] if time_sampled.dim() == 2 else time_sampled[0]
+                alpha_t = self._v7_2_alpha_network(t_scalar.view(1)).squeeze()
+                t_plus_T_scalar = time_plus_T[0, 0] if time_plus_T.dim() == 2 else time_plus_T[0]
+                alpha_t_plus_T = self._v7_2_alpha_network(t_plus_T_scalar.view(1)).squeeze()
+            elif self._v7_2_alpha is not None:
+                alpha_t = self._v7_2_alpha
+                alpha_t_plus_T = self._v7_2_alpha
+            else:
+                alpha_t = torch.tensor(0.0, device=means3D.device)
+                alpha_t_plus_T = torch.tensor(0.0, device=means3D.device)
+            
+            # Correction at time t: y_corrected(t) = y(t) - α * (x̂(t) - μ)
+            means3D_reconstructed_t, _ = self._deformation.forward_backward_position(
+                means3D_t, time_sampled
+            )
+            residual_t = means3D_reconstructed_t - means3D_sampled
+            centers_t = means3D_t - alpha_t * residual_t  # ϕ̃_f(μ, t)
+            
+            # Correction at time t + T_hat
+            means3D_reconstructed_t_plus_T, _ = self._deformation.forward_backward_position(
+                means3D_t_plus_T, time_plus_T
+            )
+            residual_t_plus_T = means3D_reconstructed_t_plus_T - means3D_sampled
+            centers_t_plus_T = means3D_t_plus_T - alpha_t_plus_T * residual_t_plus_T  # ϕ̃_f(μ, t+T̂)
+        else:
+            # No V7.2 correction, use raw forward centers
+            centers_t = means3D_t
+            centers_t_plus_T = means3D_t_plus_T
+        
+        # Step 2: Decode corrected centers back to canonical via D_b
+        # x_canon(t) = ϕ̃_f(μ, t) + D_b(ϕ̃_f(μ, t), t)
+        x_canon_t, D_b_t = self._deformation.forward_backward_position(
+            centers_t, time_sampled
+        )
+        # Note: forward_backward_position returns (x_hat, D_b) where x_hat = input + D_b
+        # So x_canon_t is already centers_t + D_b(centers_t, t)
+        
+        # x_canon(t+T̂) = ϕ̃_f(μ, t+T̂) + D_b(ϕ̃_f(μ, t+T̂), t+T̂)
+        x_canon_t_plus_T, D_b_t_plus_T = self._deformation.forward_backward_position(
+            centers_t_plus_T, time_plus_T
+        )
+        
+        # Step 3: Compute L1 loss between canonical decodes at t and t + T_hat
+        # L_cycle_canon = |x_canon(t+T̂) - x_canon(t)|
+        L_cycle_canon = torch.abs(x_canon_t_plus_T - x_canon_t).mean()
+        
+        return L_cycle_canon
+
+    def compute_timewarp_loss(self, time, delta_fraction=0.1, compute_fw_bw=False, sample_ratio=1.0):
+        """
+        Compute V7.3 temporal bidirectional warp losses.
+        
+        This loss defines true time-forward and time-backward warps using canonical
+        as a bridge between different time points:
+        
+        Time-forward warp (t1 → t2):
+            1. Get corrected position at t1: x(t1) = ϕ̃_f(μ, t1)
+            2. Decode to canonical: μ^(t1) = x(t1) + D_b(x(t1), t1)
+            3. Forward to t2: x_fw(t2|t1) = ϕ̃_f(μ^(t1), t2)
+            4. L_fw = |x_fw(t2|t1) - x(t2)|
+        
+        Time-backward warp (t2 → t1):
+            1. Get corrected position at t2: x(t2) = ϕ̃_f(μ, t2)
+            2. Decode to canonical: μ^(t2) = x(t2) + D_b(x(t2), t2)
+            3. Forward to t1: x_bw(t1|t2) = ϕ̃_f(μ^(t2), t1)
+            4. L_bw = |x_bw(t1|t2) - x(t1)|
+        
+        Optional round-trip closure (t1 → t2 → t1):
+            Start from x(t1), warp to t2, then warp back to t1, should return to x(t1).
+        
+        Args:
+            time: Base time samples t1, shape [N, 1] or [1, 1]
+            delta_fraction: Fraction of period T̂ to use as time gap Δ
+            compute_fw_bw: Whether to compute the round-trip closure loss
+            sample_ratio: Fraction of Gaussians to sample (default: 1.0 = all)
+        
+        Returns:
+            dict with keys: 'L_fw', 'L_bw', and optionally 'L_fw_bw'
+        """
+        means3D = self.get_xyz  # [N, 3] canonical positions
+        density = self.get_density
+        scales = self._scaling
+        rotations = self._rotation
+        
+        # Get the learned period T_hat = exp(period)
+        T_hat = torch.exp(self.period)  # [1]
+        
+        # Compute time gap: Δ = fraction * T̂
+        delta = delta_fraction * T_hat
+        
+        # Sample a subset of Gaussians if sample_ratio < 1.0
+        num_gaussians = means3D.shape[0]
+        if sample_ratio < 1.0 and sample_ratio > 0:
+            num_samples = max(1, int(num_gaussians * sample_ratio))
+            indices = torch.randperm(num_gaussians, device=means3D.device)[:num_samples]
+            means3D_sampled = means3D[indices]
+            density_sampled = density[indices]
+            scales_sampled = scales[indices]
+            rotations_sampled = rotations[indices]
+            time_sampled = time[indices] if time.shape[0] == num_gaussians else time[:num_samples]
+        else:
+            means3D_sampled = means3D
+            density_sampled = density
+            scales_sampled = scales
+            rotations_sampled = rotations
+            time_sampled = time
+        
+        # Ensure time has correct shape
+        if time_sampled.dim() == 0:
+            time_sampled = time_sampled.unsqueeze(0).unsqueeze(0).repeat(means3D_sampled.shape[0], 1)
+        elif time_sampled.dim() == 1:
+            time_sampled = time_sampled.unsqueeze(1)
+        if time_sampled.shape[0] == 1:
+            time_sampled = time_sampled.repeat(means3D_sampled.shape[0], 1)
+        
+        # Define time points: t1 = t, t2 = t + Δ
+        t1 = time_sampled
+        t2 = time_sampled + delta
+        
+        # ========================================
+        # Step 1: Get corrected trajectory points at t1 and t2
+        # x(t1) = ϕ̃_f(μ, t1), x(t2) = ϕ̃_f(μ, t2)
+        # ========================================
+        
+        # Forward deformation at t1: y(t1) = μ + D_f(μ, t1)
+        means3D_t1, _, _ = self._deformation(
+            means3D_sampled, scales_sampled, rotations_sampled, density_sampled, t1
+        )
+        
+        # Forward deformation at t2: y(t2) = μ + D_f(μ, t2)
+        means3D_t2, _, _ = self._deformation(
+            means3D_sampled, scales_sampled, rotations_sampled, density_sampled, t2
+        )
+        
+        # Apply V7.2 correction to get ϕ̃_f(μ, t1) and ϕ̃_f(μ, t2)
+        if self.use_v7_2_consistency:
+            # Get alpha (scalar or time-dependent)
+            if self.v7_2_use_time_dependent_alpha and self._v7_2_alpha_network is not None:
+                t1_scalar = t1[0, 0] if t1.dim() == 2 else t1[0]
+                alpha_t1 = self._v7_2_alpha_network(t1_scalar.view(1)).squeeze()
+                t2_scalar = t2[0, 0] if t2.dim() == 2 else t2[0]
+                alpha_t2 = self._v7_2_alpha_network(t2_scalar.view(1)).squeeze()
+            elif self._v7_2_alpha is not None:
+                alpha_t1 = self._v7_2_alpha
+                alpha_t2 = self._v7_2_alpha
+            else:
+                alpha_t1 = torch.tensor(0.0, device=means3D.device)
+                alpha_t2 = torch.tensor(0.0, device=means3D.device)
+            
+            # Correction at t1
+            means3D_reconstructed_t1, _ = self._deformation.forward_backward_position(
+                means3D_t1, t1
+            )
+            residual_t1 = means3D_reconstructed_t1 - means3D_sampled
+            x_t1 = means3D_t1 - alpha_t1 * residual_t1  # ϕ̃_f(μ, t1)
+            
+            # Correction at t2
+            means3D_reconstructed_t2, _ = self._deformation.forward_backward_position(
+                means3D_t2, t2
+            )
+            residual_t2 = means3D_reconstructed_t2 - means3D_sampled
+            x_t2 = means3D_t2 - alpha_t2 * residual_t2  # ϕ̃_f(μ, t2)
+        else:
+            # No correction, use raw forward centers
+            x_t1 = means3D_t1
+            x_t2 = means3D_t2
+            alpha_t1 = torch.tensor(0.0, device=means3D.device)
+            alpha_t2 = torch.tensor(0.0, device=means3D.device)
+        
+        # ========================================
+        # Step 2: Decode trajectory points back to canonical
+        # μ^(t1) = x(t1) + D_b(x(t1), t1)
+        # μ^(t2) = x(t2) + D_b(x(t2), t2)
+        # ========================================
+        mu_decoded_t1, _ = self._deformation.forward_backward_position(x_t1, t1)
+        mu_decoded_t2, _ = self._deformation.forward_backward_position(x_t2, t2)
+        
+        # ========================================
+        # Step 3: Time-forward warp (t1 → t2)
+        # x_fw(t2|t1) = ϕ̃_f(μ^(t1), t2)
+        # ========================================
+        # Forward from decoded canonical at t1 to time t2
+        x_fw_t2_raw, _, _ = self._deformation(
+            mu_decoded_t1, scales_sampled, rotations_sampled, density_sampled, t2
+        )
+        
+        # Apply correction if V7.2 is enabled
+        if self.use_v7_2_consistency and (alpha_t2 != 0.0 if isinstance(alpha_t2, float) else alpha_t2.abs() > 1e-8):
+            x_fw_reconstructed, _ = self._deformation.forward_backward_position(x_fw_t2_raw, t2)
+            residual_fw = x_fw_reconstructed - mu_decoded_t1
+            x_fw_t2 = x_fw_t2_raw - alpha_t2 * residual_fw
+        else:
+            x_fw_t2 = x_fw_t2_raw
+        
+        # L_fw: time-forward consistency
+        L_fw = torch.abs(x_fw_t2 - x_t2).mean()
+        
+        # ========================================
+        # Step 4: Time-backward warp (t2 → t1)
+        # x_bw(t1|t2) = ϕ̃_f(μ^(t2), t1)
+        # ========================================
+        # Forward from decoded canonical at t2 to time t1
+        x_bw_t1_raw, _, _ = self._deformation(
+            mu_decoded_t2, scales_sampled, rotations_sampled, density_sampled, t1
+        )
+        
+        # Apply correction if V7.2 is enabled
+        if self.use_v7_2_consistency and (alpha_t1 != 0.0 if isinstance(alpha_t1, float) else alpha_t1.abs() > 1e-8):
+            x_bw_reconstructed, _ = self._deformation.forward_backward_position(x_bw_t1_raw, t1)
+            residual_bw = x_bw_reconstructed - mu_decoded_t2
+            x_bw_t1 = x_bw_t1_raw - alpha_t1 * residual_bw
+        else:
+            x_bw_t1 = x_bw_t1_raw
+        
+        # L_bw: time-backward consistency
+        L_bw = torch.abs(x_bw_t1 - x_t1).mean()
+        
+        losses = {
+            "L_fw": L_fw,
+            "L_bw": L_bw,
+        }
+        
+        # ========================================
+        # Step 5 (Optional): Round-trip closure (t1 → t2 → t1)
+        # Start from x(t1), warp to t2 (x_fw_t2), then warp back to t1
+        # ========================================
+        if compute_fw_bw:
+            # Decode x_fw_t2 back to canonical at t2
+            mu_fw_decoded_t2, _ = self._deformation.forward_backward_position(x_fw_t2, t2)
+            
+            # Forward from this canonical to t1
+            x_cycle_t1_raw, _, _ = self._deformation(
+                mu_fw_decoded_t2, scales_sampled, rotations_sampled, density_sampled, t1
+            )
+            
+            # Apply correction if V7.2 is enabled
+            if self.use_v7_2_consistency and (alpha_t1 != 0.0 if isinstance(alpha_t1, float) else alpha_t1.abs() > 1e-8):
+                x_cycle_reconstructed, _ = self._deformation.forward_backward_position(x_cycle_t1_raw, t1)
+                residual_cycle = x_cycle_reconstructed - mu_fw_decoded_t2
+                x_cycle_t1 = x_cycle_t1_raw - alpha_t1 * residual_cycle
+            else:
+                x_cycle_t1 = x_cycle_t1_raw
+            
+            # L_fw_bw: round-trip closure
+            L_fw_bw = torch.abs(x_cycle_t1 - x_t1).mean()
+            losses["L_fw_bw"] = L_fw_bw
+        
+        return losses
+
+    def get_time_dependent_sigma_rho(self, time, sample_ratio=1.0):
+        """
+        Get time-dependent scale and density for V7.3.1 temporal regularization.
+        
+        This function queries the deformation network to get the scale and density
+        at a given time point. If scale/density are static (not time-dependent),
+        this is detected and handled gracefully.
+        
+        Args:
+            time: Time tensor of shape [N, 1] or [1, 1] or scalar
+            sample_ratio: Fraction of Gaussians to sample (default: 1.0 = all)
+        
+        Returns:
+            scales_t: Time-dependent scales [N, 3] or None if static
+            density_t: Time-dependent density [N, 1] or None if static
+            is_dynamic_scale: Boolean indicating if scales are time-dependent
+            is_dynamic_density: Boolean indicating if density is time-dependent
+        """
+        means3D = self.get_xyz  # [N, 3] canonical positions
+        density = self.get_density
+        scales = self._scaling
+        rotations = self._rotation
+        
+        # Sample a subset of Gaussians if sample_ratio < 1.0
+        num_gaussians = means3D.shape[0]
+        if sample_ratio < 1.0 and sample_ratio > 0:
+            num_samples = max(1, int(num_gaussians * sample_ratio))
+            indices = torch.randperm(num_gaussians, device=means3D.device)[:num_samples]
+            means3D = means3D[indices]
+            density = density[indices]
+            scales = scales[indices]
+            rotations = rotations[indices]
+        
+        # Ensure time has correct shape
+        if time.dim() == 0:
+            time = time.unsqueeze(0).unsqueeze(0).repeat(means3D.shape[0], 1)
+        elif time.dim() == 1:
+            time = time.unsqueeze(1)
+        if time.shape[0] == 1:
+            time = time.repeat(means3D.shape[0], 1)
+        
+        # Query deformation network to get time-dependent scales
+        # The deformation returns: (means3D_deformed, scales_deformed, rotations_deformed)
+        _, scales_t, _ = self._deformation(
+            means3D, scales, rotations, density, time
+        )
+        
+        # Check if scales are actually time-dependent
+        # By comparing with the base scales (if they're identical, scales are static)
+        # Note: scales_t comes from deformation, scales is the base canonical scale
+        is_dynamic_scale = not getattr(self._deformation.deformation_net.args, 'no_ds', False)
+        
+        # Current implementation has static density (density_deform is commented out)
+        # So density is always static for now
+        is_dynamic_density = False
+        density_t = density  # Return base density
+        
+        return scales_t, density_t, is_dynamic_scale, is_dynamic_density
+
+    def compute_sigma_rho_temporal_losses(self, time, args, sample_ratio=1.0):
+        """
+        Compute V7.3.1 temporal TV and cycle consistency losses for
+        per-Gaussian covariance (scale) and density.
+        
+        This implements:
+            L_tv_sigma: |log(S(t+δ)) - log(S(t))| - temporal smoothness for scale
+            L_tv_rho: |ρ(t+δ) - ρ(t)| - temporal smoothness for density
+            L_cycle_sigma: |log(S(t+T̂)) - log(S(t))| - periodic consistency for scale
+            L_cycle_rho: |ρ(t+T̂) - ρ(t)| - periodic consistency for density
+        
+        Args:
+            time: Base time samples, shape [N, 1] or [1, 1]
+            args: Optimization arguments containing V7.3.1 parameters
+            sample_ratio: Fraction of Gaussians to sample (default: 1.0 = all)
+        
+        Returns:
+            dict with keys: 'L_tv_rho', 'L_tv_sigma', 'L_cycle_rho', 'L_cycle_sigma'
+            (if some are not applicable, returns zeros)
+        """
+        device = time.device if hasattr(time, 'device') else self.get_xyz.device
+        zero = torch.zeros([], device=device)
+        
+        # Early exit if V7.3.1 is not enabled
+        use_v7_3_1 = getattr(args, 'use_v7_3_1_sigma_rho', False)
+        if not use_v7_3_1:
+            return {
+                "L_tv_rho": zero,
+                "L_tv_sigma": zero,
+                "L_cycle_rho": zero,
+                "L_cycle_sigma": zero,
+            }
+        
+        # Get the learned period T_hat = exp(period)
+        T_hat = torch.exp(self.period)  # [1]
+        
+        # Compute time step delta for TV loss
+        delta_frac = getattr(args, 'v7_3_1_sigma_rho_delta_fraction', 0.1)
+        delta = delta_frac * T_hat
+        
+        # Define time points
+        t1 = time  # base time
+        t2 = time + delta  # t + δ (for TV loss)
+        tT = time + T_hat  # t + T̂ (for cycle loss)
+        
+        # Get time-dependent scale/density at three time points
+        scales_t1, rho_t1, is_dynamic_scale, is_dynamic_density = self.get_time_dependent_sigma_rho(t1, sample_ratio)
+        scales_t2, rho_t2, _, _ = self.get_time_dependent_sigma_rho(t2, sample_ratio)
+        scales_tT, rho_tT, _, _ = self.get_time_dependent_sigma_rho(tT, sample_ratio)
+        
+        # Initialize losses
+        L_tv_sigma = zero
+        L_cycle_sigma = zero
+        L_tv_rho = zero
+        L_cycle_rho = zero
+        
+        # Compute scale losses if scales are time-dependent
+        if is_dynamic_scale and scales_t1 is not None:
+            eps = 1e-6
+            # Use log-scale space for stability (relative variations)
+            # scales are typically in log space already (_scaling), but after deformation
+            # they may be in linear space, so we ensure positivity
+            log_scales_t1 = torch.log(torch.abs(scales_t1) + eps)
+            log_scales_t2 = torch.log(torch.abs(scales_t2) + eps)
+            log_scales_tT = torch.log(torch.abs(scales_tT) + eps)
+            
+            # Temporal TV: penalize rapid changes in log-scale
+            L_tv_sigma = torch.abs(log_scales_t2 - log_scales_t1).mean()
+            
+            # Periodic consistency: log-scale at t+T̂ should match t
+            L_cycle_sigma = torch.abs(log_scales_tT - log_scales_t1).mean()
+        
+        # Compute density losses if density is time-dependent
+        if is_dynamic_density and rho_t1 is not None:
+            # Temporal TV: penalize rapid changes in density
+            L_tv_rho = torch.abs(rho_t2 - rho_t1).mean()
+            
+            # Periodic consistency: density at t+T̂ should match t
+            L_cycle_rho = torch.abs(rho_tT - rho_t1).mean()
+        
+        return {
+            "L_tv_rho": L_tv_rho,
+            "L_tv_sigma": L_tv_sigma,
+            "L_cycle_rho": L_cycle_rho,
+            "L_cycle_sigma": L_cycle_sigma,
+        }
+
+    def save_base_canonical_params(self):
+        """
+        V7.4: Save base canonical parameters (log-scale and density) for canonical decode losses.
+        
+        Should be called after static warm-up is complete and before dynamic training starts.
+        These values serve as the "base" canonical parameters that the backward field
+        should decode dynamic Gaussians back to.
+        """
+        # Save base log-scale: log(S_i^{base})
+        # _scaling is stored in log space already
+        self._log_scales_base = self._scaling.detach().clone()
+        
+        # Save base density: ρ_i^{base}
+        self._density_base = self.get_density.detach().clone()
+        
+        print(f"[V7.4] Saved base canonical params: log_scales_base {self._log_scales_base.shape}, density_base {self._density_base.shape}")
+
+    @property
+    def log_scales_base(self):
+        """Get base canonical log-scales (saved after warm-up)."""
+        if hasattr(self, '_log_scales_base') and self._log_scales_base is not None:
+            return self._log_scales_base
+        else:
+            # Fallback: use current scales as base
+            return self._scaling.detach()
+
+    @property
+    def density_base(self):
+        """Get base canonical density (saved after warm-up)."""
+        if hasattr(self, '_density_base') and self._density_base is not None:
+            return self._density_base
+        else:
+            # Fallback: use current density as base
+            return self.get_density.detach()
+
+    def decode_canonical_sigma_rho(self, x_t, time, sample_indices=None):
+        """
+        V7.4: Decode canonical shape (log-scale) and density from dynamic centers.
+        
+        Uses the backward network's shape and density heads to compute residuals,
+        which are added to the base canonical parameters:
+            ŝ_canon(t) = s_base + D_b_shape(x(t), t)
+            ρ̂_canon(t) = ρ_base + D_b_dens(x(t), t)
+        
+        Args:
+            x_t: Dynamic centers at time t, shape (N, 3)
+            time: Time tensor, shape (N, 1)
+            sample_indices: Optional indices for subsampling
+        
+        Returns:
+            s_canon_t: Canonical decoded log-scale (N, 3)
+            rho_canon_t: Canonical decoded density (N, 1)
+        """
+        # Get base canonical parameters
+        s_base = self.log_scales_base
+        rho_base = self.density_base
+        
+        # Apply sample indices if provided
+        if sample_indices is not None:
+            s_base = s_base[sample_indices]
+            rho_base = rho_base[sample_indices]
+        
+        # Ensure time has correct shape
+        if time.dim() == 0:
+            time = time.unsqueeze(0).unsqueeze(0).repeat(x_t.shape[0], 1)
+        elif time.dim() == 1:
+            time = time.unsqueeze(1)
+        if time.shape[0] == 1:
+            time = time.repeat(x_t.shape[0], 1)
+        
+        # Get backward decode residuals using V7.4 heads
+        D_b_pos, D_b_shape, D_b_dens = self._deformation.backward_deform_full(x_t, time)
+        
+        # Canonical decoded parameters
+        s_canon_t = s_base + D_b_shape
+        rho_canon_t = rho_base + D_b_dens
+        
+        return s_canon_t, rho_canon_t
+
+    def compute_canonical_sigma_rho_losses(self, time, args, sample_ratio=1.0):
+        """
+        Compute V7.4 canonical decode losses for shape (Sigma/scale) and density.
+        
+        This implements:
+            L_cycle_canon_sigma: |ŝ_canon(t+T̂) - ŝ_canon(t)| - periodic consistency
+            L_cycle_canon_rho: |ρ̂_canon(t+T̂) - ρ̂_canon(t)| - periodic consistency
+            L_prior_sigma: |ŝ_canon(t) - s_base| - anchor to base canonical
+            L_prior_rho: |ρ̂_canon(t) - ρ_base| - anchor to base canonical
+        
+        Args:
+            time: Base time samples, shape [N, 1] or [1, 1]
+            args: Optimization arguments containing V7.4 parameters
+            sample_ratio: Fraction of Gaussians to sample (default: 1.0 = all)
+        
+        Returns:
+            dict with keys: 'L_cycle_canon_Sigma', 'L_cycle_canon_rho', 'L_prior_Sigma', 'L_prior_rho'
+        """
+        device = time.device if hasattr(time, 'device') else self.get_xyz.device
+        zero = torch.zeros([], device=device)
+        
+        # Early exit if V7.4 is not enabled
+        use_v7_4 = getattr(args, 'use_v7_4_canonical_decode', False)
+        if not use_v7_4:
+            return {
+                "L_cycle_canon_Sigma": zero,
+                "L_cycle_canon_rho": zero,
+                "L_prior_Sigma": zero,
+                "L_prior_rho": zero,
+            }
+        
+        means3D = self.get_xyz  # [N, 3] canonical positions
+        density = self.get_density
+        scales = self._scaling
+        rotations = self._rotation
+        
+        # Sample a subset of Gaussians if sample_ratio < 1.0
+        sample_indices = None
+        num_gaussians = means3D.shape[0]
+        if sample_ratio < 1.0 and sample_ratio > 0:
+            num_samples = max(1, int(num_gaussians * sample_ratio))
+            sample_indices = torch.randperm(num_gaussians, device=means3D.device)[:num_samples]
+            means3D = means3D[sample_indices]
+            density = density[sample_indices]
+            scales = scales[sample_indices]
+            rotations = rotations[sample_indices]
+        
+        # Get the learned period T_hat = exp(period)
+        T_hat = torch.exp(self.period)  # [1]
+        
+        # Define time points
+        t1 = time  # base time
+        tT = time + T_hat  # t + T̂ (for cycle loss)
+        
+        # Ensure time has correct shape
+        if t1.dim() == 0:
+            t1 = t1.unsqueeze(0).unsqueeze(0).repeat(means3D.shape[0], 1)
+        elif t1.dim() == 1:
+            t1 = t1.unsqueeze(1)
+        if t1.shape[0] == 1:
+            t1 = t1.repeat(means3D.shape[0], 1)
+        tT = t1 + T_hat
+        
+        # Get corrected dynamic centers at t1 and tT using V7.2 get_deformed_centers
+        # Forward deformation at t1
+        means3D_t1, _, _ = self._deformation(
+            means3D, scales, rotations, density, t1
+        )
+        # Forward deformation at tT
+        means3D_tT, _, _ = self._deformation(
+            means3D, scales, rotations, density, tT
+        )
+        
+        # Apply V7.2 correction if enabled
+        if self.use_v7_2_consistency:
+            if self.v7_2_use_time_dependent_alpha and self._v7_2_alpha_network is not None:
+                t1_scalar = t1[0, 0] if t1.dim() == 2 else t1[0]
+                alpha_t1 = self._v7_2_alpha_network(t1_scalar.view(1)).squeeze()
+                tT_scalar = tT[0, 0] if tT.dim() == 2 else tT[0]
+                alpha_tT = self._v7_2_alpha_network(tT_scalar.view(1)).squeeze()
+            elif self._v7_2_alpha is not None:
+                alpha_t1 = self._v7_2_alpha
+                alpha_tT = self._v7_2_alpha
+            else:
+                alpha_t1 = torch.tensor(0.0, device=device)
+                alpha_tT = torch.tensor(0.0, device=device)
+            
+            # Correction at t1
+            means3D_reconstructed_t1, _ = self._deformation.forward_backward_position(means3D_t1, t1)
+            residual_t1 = means3D_reconstructed_t1 - means3D
+            x_t1 = means3D_t1 - alpha_t1 * residual_t1
+            
+            # Correction at tT
+            means3D_reconstructed_tT, _ = self._deformation.forward_backward_position(means3D_tT, tT)
+            residual_tT = means3D_reconstructed_tT - means3D
+            x_tT = means3D_tT - alpha_tT * residual_tT
+        else:
+            x_t1 = means3D_t1
+            x_tT = means3D_tT
+        
+        # Canonical-decoded Σ/ρ at t1 and tT
+        s_canon_t1, rho_canon_t1 = self.decode_canonical_sigma_rho(x_t1, t1, sample_indices)
+        s_canon_tT, rho_canon_tT = self.decode_canonical_sigma_rho(x_tT, tT, sample_indices)
+        
+        # Base canonical parameters (with sample indices if applicable)
+        s_base = self.log_scales_base
+        rho_base = self.density_base
+        if sample_indices is not None:
+            s_base = s_base[sample_indices]
+            rho_base = rho_base[sample_indices]
+        
+        # Cycle-consistency losses
+        L_cycle_canon_Sigma = torch.abs(s_canon_tT - s_canon_t1).mean()
+        L_cycle_canon_rho = torch.abs(rho_canon_tT - rho_canon_t1).mean()
+        
+        # Prior losses (anchor to base canonical)
+        L_prior_Sigma = torch.abs(s_canon_t1 - s_base).mean()
+        L_prior_rho = torch.abs(rho_canon_t1 - rho_base).mean()
+        
+        return {
+            "L_cycle_canon_Sigma": L_cycle_canon_Sigma,
+            "L_cycle_canon_rho": L_cycle_canon_rho,
+            "L_prior_Sigma": L_prior_Sigma,
+            "L_prior_rho": L_prior_rho,
+        }
+
+    def compute_full_timewarp_sigma_rho_losses(self, means3D, time, args, sample_ratio=0.1):
+        """
+        V7.5: Compute full time-warp consistency losses for shape (Sigma/scale) and density.
+        
+        This implements time-warp: G(t1) -> Backward decode -> Canonical -> Forward timewarp -> G_hat(t2|t1)
+        We require G_hat(t2|t1) matches G(t2) for shape and density.
+        
+        Losses:
+            L_fw_Sigma = |s_hat_fw(t2|t1) - s(t2)|  (forward warp shape)
+            L_fw_rho = |rho_hat_fw(t2|t1) - rho(t2)|  (forward warp density)
+            L_bw_Sigma = |s_hat_bw(t1|t2) - s(t1)|  (backward warp shape)
+            L_bw_rho = |rho_hat_bw(t1|t2) - rho(t1)|  (backward warp density)
+            L_rt_Sigma, L_rt_rho: round-trip consistency (optional, placeholder for now)
+        
+        Args:
+            means3D: Canonical Gaussian centers [N, 3]
+            time: Current time tensor
+            args: Optimization arguments containing V7.5 parameters
+            sample_ratio: Fraction of Gaussians to sample (default: 0.1)
+        
+        Returns:
+            dict with keys: 'L_fw_Sigma', 'L_fw_rho', 'L_bw_Sigma', 'L_bw_rho', 'L_rt_Sigma', 'L_rt_rho'
+        """
+        device = time.device if hasattr(time, 'device') else means3D.device
+        zero = torch.zeros([], device=device)
+        
+        # Early exit if V7.5 is not enabled
+        use_v7_5 = getattr(args, 'use_v7_5_full_timewarp', False)
+        if not use_v7_5 or self._v7_5_time_mlp is None:
+            return {
+                "L_fw_Sigma": zero,
+                "L_fw_rho": zero,
+                "L_bw_Sigma": zero,
+                "L_bw_rho": zero,
+                "L_rt_Sigma": zero,
+                "L_rt_rho": zero,
+            }
+        
+        # Also require V7.2 consistency and V7.4 canonical decode to be enabled
+        # (V7.5 builds on top of V7.4's backward decode heads)
+        use_v7_2 = getattr(args, 'use_v7_2_consistency', False)
+        use_v7_4 = getattr(args, 'use_v7_4_canonical_decode', False)
+        if not use_v7_2 or not use_v7_4:
+            return {
+                "L_fw_Sigma": zero,
+                "L_fw_rho": zero,
+                "L_bw_Sigma": zero,
+                "L_bw_rho": zero,
+                "L_rt_Sigma": zero,
+                "L_rt_rho": zero,
+            }
+        
+        # Get Gaussian parameters
+        density = self.get_density
+        scales = self._scaling
+        rotations = self._rotation
+        
+        # Sample a subset of Gaussians if sample_ratio < 1.0
+        sample_indices = None
+        num_gaussians = means3D.shape[0]
+        if sample_ratio < 1.0 and sample_ratio > 0:
+            num_samples = max(1, int(num_gaussians * sample_ratio))
+            sample_indices = torch.randperm(num_gaussians, device=means3D.device)[:num_samples]
+            means3D_sampled = means3D[sample_indices]
+            density_sampled = density[sample_indices]
+            scales_sampled = scales[sample_indices]
+            rotations_sampled = rotations[sample_indices]
+        else:
+            means3D_sampled = means3D
+            density_sampled = density
+            scales_sampled = scales
+            rotations_sampled = rotations
+        
+        # Get the learned period T_hat = exp(period)
+        T_hat = torch.exp(self.period)  # [1]
+        
+        # Time-warp delta: Δt = delta_fraction * T̂
+        delta_fraction = getattr(args, 'v7_5_timewarp_delta_fraction', 0.25)
+        delta_t = delta_fraction * T_hat
+        
+        # Define time points: t1 and t2 = t1 + Δt
+        # Ensure time has correct shape
+        if time.dim() == 0:
+            t1 = time.unsqueeze(0).unsqueeze(0).repeat(means3D_sampled.shape[0], 1)
+        elif time.dim() == 1:
+            t1 = time.unsqueeze(1)
+            if t1.shape[0] == 1:
+                t1 = t1.repeat(means3D_sampled.shape[0], 1)
+        else:
+            t1 = time
+            if t1.shape[0] == 1:
+                t1 = t1.repeat(means3D_sampled.shape[0], 1)
+        
+        t2 = t1 + delta_t  # (N, 1)
+        
+        # =========== Step 1: Get dynamic centers at t1 and t2 ===========
+        # Forward deformation at t1 and t2
+        x_dyn_t1, _, _ = self._deformation(
+            means3D_sampled, scales_sampled, rotations_sampled, density_sampled, t1
+        )
+        x_dyn_t2, _, _ = self._deformation(
+            means3D_sampled, scales_sampled, rotations_sampled, density_sampled, t2
+        )
+        
+        # Apply V7.2 correction
+        if self.v7_2_use_time_dependent_alpha and self._v7_2_alpha_network is not None:
+            t1_scalar = t1[0, 0] if t1.dim() == 2 else t1[0]
+            alpha_t1 = self._v7_2_alpha_network(t1_scalar.view(1)).squeeze()
+            t2_scalar = t2[0, 0] if t2.dim() == 2 else t2[0]
+            alpha_t2 = self._v7_2_alpha_network(t2_scalar.view(1)).squeeze()
+        elif self._v7_2_alpha is not None:
+            alpha_t1 = self._v7_2_alpha
+            alpha_t2 = self._v7_2_alpha
+        else:
+            alpha_t1 = torch.tensor(0.0, device=device)
+            alpha_t2 = torch.tensor(0.0, device=device)
+        
+        # Correction at t1
+        x_recon_t1, _ = self._deformation.forward_backward_position(x_dyn_t1, t1)
+        residual_t1 = x_recon_t1 - means3D_sampled
+        x_t1 = x_dyn_t1 - alpha_t1 * residual_t1  # corrected dynamic centers at t1
+        
+        # Correction at t2
+        x_recon_t2, _ = self._deformation.forward_backward_position(x_dyn_t2, t2)
+        residual_t2 = x_recon_t2 - means3D_sampled
+        x_t2 = x_dyn_t2 - alpha_t2 * residual_t2  # corrected dynamic centers at t2
+        
+        # =========== Step 2: Get dynamic log-scale and density at t1 and t2 ===========
+        # For now, scale and density are static (not time-dependent in rendering)
+        # Use base log-scale and density as the "ground truth" dynamic values
+        # (In future if dynamic scale/density is enabled, query them at t1 and t2)
+        s_base = self.log_scales_base
+        rho_base = self.density_base
+        if sample_indices is not None:
+            s_dyn_t1 = s_base[sample_indices]
+            s_dyn_t2 = s_base[sample_indices]
+            rho_dyn_t1 = rho_base[sample_indices]
+            rho_dyn_t2 = rho_base[sample_indices]
+        else:
+            s_dyn_t1 = s_base
+            s_dyn_t2 = s_base
+            rho_dyn_t1 = rho_base
+            rho_dyn_t2 = rho_base
+        
+        # =========== Step 3: Canonical decode at t1 and t2 ===========
+        s_canon_t1, rho_canon_t1 = self.decode_canonical_sigma_rho(x_t1, t1, sample_indices)
+        s_canon_t2, rho_canon_t2 = self.decode_canonical_sigma_rho(x_t2, t2, sample_indices)
+        
+        # =========== Step 4: Forward timewarp: canonical at t1 -> dynamic at t2 ===========
+        # Time embedding for t2
+        t2_scalar = t2[0, 0] if t2.dim() == 2 else t2[0]
+        t2_embed = self._v7_5_time_mlp(t2_scalar.view(1, 1))  # (1, time_embed_dim)
+        t2_embed_expanded = t2_embed.expand(s_canon_t1.shape[0], -1)  # (N, time_embed_dim)
+        
+        # Shape timewarp: canonical log-scale at t1 + t2_embed -> predicted log-scale at t2
+        shape_input_fw = torch.cat([s_canon_t1, t2_embed_expanded], dim=-1)  # (N, 3 + 16)
+        s_fw_t2_pred = self._v7_5_shape_timewarp_head(shape_input_fw)  # (N, 3)
+        
+        # Density timewarp: canonical density at t1 + t2_embed -> predicted density at t2
+        dens_input_fw = torch.cat([rho_canon_t1, t2_embed_expanded], dim=-1)  # (N, 1 + 16)
+        rho_fw_t2_pred = self._v7_5_dens_timewarp_head(dens_input_fw)  # (N, 1)
+        
+        # Forward warp losses
+        L_fw_Sigma = torch.abs(s_fw_t2_pred - s_dyn_t2).mean()
+        L_fw_rho = torch.abs(rho_fw_t2_pred - rho_dyn_t2).mean()
+        
+        # =========== Step 5: Backward timewarp: canonical at t2 -> dynamic at t1 (optional) ===========
+        lambda_bw_sigma = getattr(args, 'v7_5_lambda_bw_sigma', 0.0)
+        lambda_bw_rho = getattr(args, 'v7_5_lambda_bw_rho', 0.0)
+        
+        if lambda_bw_sigma > 0 or lambda_bw_rho > 0:
+            # Time embedding for t1
+            t1_scalar = t1[0, 0] if t1.dim() == 2 else t1[0]
+            t1_embed = self._v7_5_time_mlp(t1_scalar.view(1, 1))  # (1, time_embed_dim)
+            t1_embed_expanded = t1_embed.expand(s_canon_t2.shape[0], -1)  # (N, time_embed_dim)
+            
+            # Shape backward warp: canonical log-scale at t2 + t1_embed -> predicted log-scale at t1
+            shape_input_bw = torch.cat([s_canon_t2, t1_embed_expanded], dim=-1)
+            s_bw_t1_pred = self._v7_5_shape_timewarp_head(shape_input_bw)
+            
+            # Density backward warp
+            dens_input_bw = torch.cat([rho_canon_t2, t1_embed_expanded], dim=-1)
+            rho_bw_t1_pred = self._v7_5_dens_timewarp_head(dens_input_bw)
+            
+            L_bw_Sigma = torch.abs(s_bw_t1_pred - s_dyn_t1).mean()
+            L_bw_rho = torch.abs(rho_bw_t1_pred - rho_dyn_t1).mean()
+        else:
+            L_bw_Sigma = zero
+            L_bw_rho = zero
+        
+        # =========== Step 6: Round-trip warp (optional, set to zero for now) ===========
+        # Round-trip: t1 -> t2 -> t1 would be expensive and complex
+        # We leave it as a placeholder for future implementation
+        L_rt_Sigma = zero
+        L_rt_rho = zero
+        
+        return {
+            "L_fw_Sigma": L_fw_Sigma,
+            "L_fw_rho": L_fw_rho,
+            "L_bw_Sigma": L_bw_Sigma,
+            "L_bw_rho": L_bw_rho,
+            "L_rt_Sigma": L_rt_Sigma,
+            "L_rt_rho": L_rt_rho,
+        }
 
     def compute_mode_regularization_loss(self):
         """

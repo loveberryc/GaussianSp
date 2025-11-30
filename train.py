@@ -1,6 +1,7 @@
 import os
 import os.path as osp
 import torch
+import torch.nn.functional as F
 from random import randint
 import sys
 from tqdm import tqdm
@@ -19,6 +20,10 @@ from x2_gaussian.dataset import Scene
 from x2_gaussian.utils.loss_utils import l1_loss, ssim, tv_3d_loss
 from x2_gaussian.utils.image_utils import metric_vol, metric_proj
 from x2_gaussian.utils.plot_utils import show_two_slice
+from x2_gaussian.utils.static_reweighting import StaticReweightingManager, LearnableStaticReweighting, apply_s1_preset
+from x2_gaussian.utils.phase_gated_static import PhaseGatedStatic, apply_s2_preset
+from x2_gaussian.utils.dual_static_volume import DualStaticVolume, apply_s3_preset
+from x2_gaussian.utils.temporal_ensemble_static import TemporalEnsembleStatic, apply_s4_preset, initialize_gaussians_from_avg_ct
 
 def apply_v7_preset(opt, hyper):
     """
@@ -65,11 +70,100 @@ def apply_v7_preset(opt, hyper):
     else:
         version_str = "V7"
     
+    # Check if V7.2 end-to-end consistency is enabled
+    use_v7_2 = getattr(opt, 'use_v7_2_consistency', False)
+    # Check if V7.2.1 canonical cycle consistency is enabled
+    use_v7_2_1 = getattr(opt, 'use_v7_2_1_cycle_canon', False) and use_v7_2
+    # Check if V7.3 temporal bidirectional warp is enabled
+    use_v7_3 = getattr(opt, 'use_v7_3_timewarp', False) and use_v7_2
+    # Check if V7.3.1 sigma/rho temporal regularization is enabled
+    use_v7_3_1 = getattr(opt, 'use_v7_3_1_sigma_rho', False) and use_v7_2
+    # Check if V7.4 canonical decode is enabled
+    use_v7_4 = getattr(opt, 'use_v7_4_canonical_decode', False) and use_v7_2
+    # Check if V7.5 full time-warp is enabled
+    use_v7_5 = getattr(opt, 'use_v7_5_full_timewarp', False) and use_v7_2 and use_v7_4
+    
+    if use_v7_5:
+        version_str = "V7.5 FULL TIME-WARP SIGMA/RHO"
+    elif use_v7_4:
+        version_str = "V7.4 CANONICAL DECODE SIGMA/RHO"
+    elif use_v7_3_1:
+        version_str = "V7.3.1 SIGMA/RHO TEMPORAL REGULARIZATION"
+    elif use_v7_3:
+        version_str = "V7.3 TEMPORAL BIDIRECTIONAL WARP"
+    elif use_v7_2_1:
+        version_str = "V7.2.1 END-TO-END + CANONICAL CYCLE"
+    elif use_v7_2:
+        version_str = "V7.2 END-TO-END CONSISTENCY-AWARE"
+    
     print("=" * 60)
     print(f"{version_str} MAIN MODEL PRESET ACTIVATED")
     print("=" * 60)
     print("Using bidirectional displacement (D_f, D_b) with:")
-    print("  - L_inv (inverse consistency): ENABLED")
+    if use_v7_2:
+        print("  - L_inv (inverse consistency): DISABLED (V7.2 uses D_b in rendering path)")
+        print("  - L_b (backward magnitude reg): ENABLED (V7.2)")
+        alpha_learnable = getattr(opt, 'v7_2_alpha_learnable', False)
+        alpha_init = getattr(opt, 'v7_2_alpha_init', 0.3)
+        print(f"  - V7.2 alpha: {alpha_init} ({'learnable' if alpha_learnable else 'fixed'})")
+        if use_v7_2_1:
+            lambda_cycle_canon = getattr(opt, 'v7_2_1_lambda_cycle_canon', 1e-3)
+            print(f"  - L_cycle_canon (canonical cycle): ENABLED (V7.2.1, λ={lambda_cycle_canon})")
+        if use_v7_3:
+            lambda_fw = getattr(opt, 'v7_3_lambda_fw', 1e-3)
+            lambda_bw = getattr(opt, 'v7_3_lambda_bw', 1e-3)
+            lambda_fw_bw = getattr(opt, 'v7_3_lambda_fw_bw', 0.0)
+            delta_frac = getattr(opt, 'v7_3_timewarp_delta_fraction', 0.1)
+            print(f"  - L_fw (time-forward): ENABLED (V7.3, λ={lambda_fw})")
+            print(f"  - L_bw (time-backward): ENABLED (V7.3, λ={lambda_bw})")
+            if lambda_fw_bw > 0:
+                print(f"  - L_fw_bw (round-trip): ENABLED (V7.3, λ={lambda_fw_bw})")
+            print(f"  - Timewarp Δ fraction: {delta_frac}")
+        # V7.3.1: Sigma/Rho temporal regularization
+        use_v7_3_1 = getattr(opt, 'use_v7_3_1_sigma_rho', False) and use_v7_2
+        if use_v7_3_1:
+            lambda_tv_sigma = getattr(opt, 'v7_3_1_lambda_tv_sigma', 1e-4)
+            lambda_tv_rho = getattr(opt, 'v7_3_1_lambda_tv_rho', 1e-4)
+            lambda_cycle_sigma = getattr(opt, 'v7_3_1_lambda_cycle_sigma', 1e-4)
+            lambda_cycle_rho = getattr(opt, 'v7_3_1_lambda_cycle_rho', 1e-4)
+            delta_frac_sigma_rho = getattr(opt, 'v7_3_1_sigma_rho_delta_fraction', 0.1)
+            print(f"  - L_tv_sigma (scale temporal TV): ENABLED (V7.3.1, λ={lambda_tv_sigma})")
+            print(f"  - L_cycle_sigma (scale periodic): ENABLED (V7.3.1, λ={lambda_cycle_sigma})")
+            print(f"  - L_tv_rho (density temporal TV): λ={lambda_tv_rho} (active if density is dynamic)")
+            print(f"  - L_cycle_rho (density periodic): λ={lambda_cycle_rho} (active if density is dynamic)")
+            print(f"  - Sigma/Rho Δ fraction: {delta_frac_sigma_rho}")
+        # V7.4: Canonical decode for Sigma/Rho
+        if use_v7_4:
+            lambda_cycle_canon_sigma = getattr(opt, 'v7_4_lambda_cycle_canon_sigma', 1e-4)
+            lambda_cycle_canon_rho = getattr(opt, 'v7_4_lambda_cycle_canon_rho', 1e-4)
+            lambda_prior_sigma = getattr(opt, 'v7_4_lambda_prior_sigma', 1e-4)
+            lambda_prior_rho = getattr(opt, 'v7_4_lambda_prior_rho', 1e-4)
+            print(f"  - L_cycle_canon_Sigma (canonical shape cycle): ENABLED (V7.4, λ={lambda_cycle_canon_sigma})")
+            print(f"  - L_cycle_canon_rho (canonical density cycle): ENABLED (V7.4, λ={lambda_cycle_canon_rho})")
+            print(f"  - L_prior_Sigma (shape anchor to base): ENABLED (V7.4, λ={lambda_prior_sigma})")
+            print(f"  - L_prior_rho (density anchor to base): ENABLED (V7.4, λ={lambda_prior_rho})")
+            print(f"  - Backward shape/density heads: ENABLED (V7.4)")
+        # V7.5: Full time-warp for Sigma/Rho
+        if use_v7_5:
+            lambda_fw_sigma = getattr(opt, 'v7_5_lambda_fw_sigma', 1e-5)
+            lambda_fw_rho = getattr(opt, 'v7_5_lambda_fw_rho', 1e-5)
+            lambda_bw_sigma = getattr(opt, 'v7_5_lambda_bw_sigma', 0.0)
+            lambda_bw_rho = getattr(opt, 'v7_5_lambda_bw_rho', 0.0)
+            lambda_rt_sigma = getattr(opt, 'v7_5_lambda_rt_sigma', 0.0)
+            lambda_rt_rho = getattr(opt, 'v7_5_lambda_rt_rho', 0.0)
+            delta_frac_v7_5 = getattr(opt, 'v7_5_timewarp_delta_fraction', 0.25)
+            print(f"  - L_fw_Sigma (forward warp shape): ENABLED (V7.5, λ={lambda_fw_sigma})")
+            print(f"  - L_fw_rho (forward warp density): ENABLED (V7.5, λ={lambda_fw_rho})")
+            if lambda_bw_sigma > 0:
+                print(f"  - L_bw_Sigma (backward warp shape): ENABLED (V7.5, λ={lambda_bw_sigma})")
+            if lambda_bw_rho > 0:
+                print(f"  - L_bw_rho (backward warp density): ENABLED (V7.5, λ={lambda_bw_rho})")
+            if lambda_rt_sigma > 0 or lambda_rt_rho > 0:
+                print(f"  - L_rt_Sigma/rho (round-trip): ENABLED (V7.5, λ_σ={lambda_rt_sigma}, λ_ρ={lambda_rt_rho})")
+            print(f"  - Forward timewarp decoders: ENABLED (V7.5)")
+            print(f"  - Timewarp Δ fraction: {delta_frac_v7_5}")
+    else:
+        print("  - L_inv (inverse consistency): ENABLED")
     print("  - L_cycle (motion periodicity): ENABLED")
     if use_low_rank:
         num_modes = getattr(hyper, 'num_motion_modes', 3)
@@ -89,13 +183,19 @@ def apply_v7_preset(opt, hyper):
     print("  - Shared velocity inverse: DISABLED")
     print("=" * 60)
     
-    # Force-enable v1 + v3 components
-    opt.use_inverse_consistency = True
-    if opt.lambda_inv <= 0:
-        opt.lambda_inv = 0.1  # Default value from best experiments
-        print(f"  -> Setting lambda_inv to {opt.lambda_inv} (default)")
+    # Force-enable v1 + v3 components (but skip L_inv for V7.2)
+    if use_v7_2:
+        # V7.2: L_inv is disabled, D_b participates through rendering path
+        opt.use_inverse_consistency = False
+        opt.lambda_inv = 0.0
+        print(f"  -> V7.2: lambda_inv = 0 (L_inv disabled, using L_b instead)")
     else:
-        print(f"  -> Using user-specified lambda_inv = {opt.lambda_inv}")
+        opt.use_inverse_consistency = True
+        if opt.lambda_inv <= 0:
+            opt.lambda_inv = 0.1  # Default value from best experiments
+            print(f"  -> Setting lambda_inv to {opt.lambda_inv} (default)")
+        else:
+            print(f"  -> Using user-specified lambda_inv = {opt.lambda_inv}")
     
     opt.use_cycle_motion = True
     if opt.lambda_cycle <= 0:
@@ -131,7 +231,13 @@ def apply_v7_preset(opt, hyper):
     low_rank_str = f", low_rank_modes={num_modes}" if use_low_rank else ""
     gating_str = f", adaptive_gating=True, lambda_gate={opt.lambda_gate}" if use_adaptive_gating else ""
     traj_str = f", traj_smoothing=True, lambda_traj={opt.lambda_traj}" if use_traj_smoothing else ""
-    print(f"{version_str} Final Config: lambda_inv={opt.lambda_inv}, lambda_cycle={opt.lambda_cycle}{phase_str}{low_rank_str}{gating_str}{traj_str}")
+    v7_2_str = f", v7_2_alpha={getattr(opt, 'v7_2_alpha_init', 0.3)}, L_b_reg={getattr(opt, 'v7_2_lambda_b_reg', 1e-3)}" if use_v7_2 else ""
+    v7_2_1_str = f", L_cycle_canon_reg={getattr(opt, 'v7_2_1_lambda_cycle_canon', 1e-3)}" if use_v7_2_1 else ""
+    v7_3_str = f", L_fw={getattr(opt, 'v7_3_lambda_fw', 1e-3)}, L_bw={getattr(opt, 'v7_3_lambda_bw', 1e-3)}, Δ_frac={getattr(opt, 'v7_3_timewarp_delta_fraction', 0.1)}" if use_v7_3 else ""
+    v7_3_1_str = f", L_tv_σ={getattr(opt, 'v7_3_1_lambda_tv_sigma', 1e-4)}, L_cycle_σ={getattr(opt, 'v7_3_1_lambda_cycle_sigma', 1e-4)}" if use_v7_3_1 else ""
+    v7_4_str = f", L_cycle_canon_σ={getattr(opt, 'v7_4_lambda_cycle_canon_sigma', 1e-4)}, L_prior_σ={getattr(opt, 'v7_4_lambda_prior_sigma', 1e-4)}" if use_v7_4 else ""
+    v7_5_str = f", L_fw_σ={getattr(opt, 'v7_5_lambda_fw_sigma', 1e-5)}, L_fw_ρ={getattr(opt, 'v7_5_lambda_fw_rho', 1e-5)}" if use_v7_5 else ""
+    print(f"{version_str} Final Config: lambda_inv={opt.lambda_inv}, lambda_cycle={opt.lambda_cycle}{phase_str}{low_rank_str}{gating_str}{traj_str}{v7_2_str}{v7_2_1_str}{v7_3_str}{v7_3_1_str}{v7_4_str}{v7_5_str}")
     print("=" * 60)
 
 
@@ -163,7 +269,54 @@ def training(
 
     # Set up Gaussians
     gaussians = GaussianModel(scale_bound, hyper)
-    initialize_gaussian(gaussians, dataset, None)
+    
+    # Determine initialization method (priority: s5 > s4_2 > standard)
+    init_method_used = "standard"
+    
+    # s5: 4D Dynamic-Aware Multi-Phase FDK Initialization
+    # s5 generates init files offline via tools/build_init_s5_4d.py
+    # The init file is in standard format [N, 4] with [x, y, z, density]
+    if opt.use_s5_4d_init:
+        s5_init_path = opt.s5_init_path
+        if s5_init_path and os.path.exists(s5_init_path):
+            print("=" * 60)
+            print("S5: 4D DYNAMIC-AWARE INITIALIZATION")
+            print("=" * 60)
+            print(f"  Using s5 init file: {s5_init_path}")
+            # Override ply_path to use s5 init file
+            dataset.ply_path = s5_init_path
+            initialize_gaussian(gaussians, dataset, None)
+            init_method_used = "s5"
+            print("=" * 60)
+        else:
+            print(f"[WARNING] s5 enabled but init file not found: {s5_init_path}")
+            print(f"  Please generate it first with:")
+            print(f"    python tools/build_init_s5_4d.py --input <pickle> --output <s5_init.npy>")
+            print(f"  Falling back to standard initialization.")
+    
+    # s4_2: Use average CT for Gaussians initialization if enabled
+    if init_method_used == "standard" and opt.use_s4_avg_ct_init and opt.s4_avg_ct_path and os.path.exists(opt.s4_avg_ct_path):
+        print(f"[s4_2] Using average CT for Gaussians initialization")
+        positions, densities = initialize_gaussians_from_avg_ct(
+            avg_ct_path=opt.s4_avg_ct_path,
+            scanner_cfg=scanner_cfg,
+            bbox=scene.bbox,
+            num_gaussians=opt.s4_avg_ct_init_num_gaussians,
+            density_thresh=opt.s4_avg_ct_init_thresh,
+            density_rescale=opt.s4_avg_ct_init_density_rescale,
+            method=opt.s4_avg_ct_init_method,
+            save_path=None
+        )
+        # Initialize from custom positions and densities
+        initialize_gaussian(gaussians, dataset, None, 
+                           custom_positions=positions, 
+                           custom_densities=densities)
+        init_method_used = "s4_2"
+    
+    # Standard initialization (if no special init method used)
+    if init_method_used == "standard":
+        initialize_gaussian(gaussians, dataset, None)
+    
     scene.gaussians = gaussians
 
     scene_reconstruction(
@@ -181,6 +334,12 @@ def training(
         scene,
         'coarse',
     )
+
+    # V7.4: Save base canonical parameters after warm-up (coarse stage)
+    # These serve as the "anchor" for canonical decode losses
+    use_v7_4 = getattr(opt, 'use_v7_4_canonical_decode', False)
+    if use_v7_4:
+        gaussians.save_base_canonical_params()
 
     scene_reconstruction(
         dataset,
@@ -233,8 +392,122 @@ def scene_reconstruction(
         y,
         z,
     )
+    
+    # s1: Initialize static reweighting for coarse (static warm-up) stage
+    static_reweight_manager = None  # For residual method (方案B)
+    learnable_static_weights = None  # For learnable method (方案A)
+    
+    if stage == 'coarse' and opt.use_static_reweighting:
+        num_train_projections = len(scene.getTrainCameras())
+        apply_s1_preset(opt)
+        
+        if opt.static_reweight_method == "residual":
+            # 方案B: Residual-based reweighting (EMA)
+            static_reweight_manager = StaticReweightingManager(
+                num_projections=num_train_projections,
+                burnin_steps=opt.static_reweight_burnin_steps,
+                ema_beta=opt.static_reweight_ema_beta,
+                tau=opt.static_reweight_tau,
+                weight_type=opt.static_reweight_weight_type,
+                device="cuda"
+            )
+            print(f"  -> Initialized StaticReweightingManager (residual) for {num_train_projections} projections")
+            
+        elif opt.static_reweight_method == "learnable":
+            # 方案A: Learnable per-projection weights
+            learnable_static_weights = LearnableStaticReweighting(
+                num_projections=num_train_projections,
+                target_mean=opt.static_reweight_target_mean,
+                burnin_steps=opt.static_reweight_burnin_steps,
+                device="cuda"
+            )
+            print(f"  -> Initialized LearnableStaticReweighting (learnable) for {num_train_projections} projections")
+            print(f"     - α_j initialized to {learnable_static_weights.alpha[0].item():.4f} (w_j ≈ {opt.static_reweight_target_mean})")
+
+    # s2: Initialize PhaseGatedStatic for coarse (static warm-up) stage
+    phase_gated_static = None
+    
+    if stage == 'coarse' and opt.use_phase_gated_static:
+        apply_s2_preset(opt)
+        
+        phase_gated_static = PhaseGatedStatic(
+            sigma_target=opt.static_phase_sigma_target,
+            burnin_steps=opt.static_phase_burnin_steps,
+            init_period=1.0,  # Will be learned
+            device="cuda"
+        )
+        print(f"  -> Initialized PhaseGatedStatic")
+        print(f"     - σ_target = {opt.static_phase_sigma_target:.3f} rad")
+        print(f"     - burn-in steps = {opt.static_phase_burnin_steps}")
+
+    # s3: Initialize DualStaticVolume for coarse (static warm-up) stage
+    dual_static_volume = None
+    
+    if stage == 'coarse' and opt.use_s3_dual_static_volume:
+        apply_s3_preset(opt)
+        
+        dual_static_volume = DualStaticVolume(
+            resolution=opt.s3_voxel_resolution,
+            bbox=bbox,
+            num_ray_samples=opt.s3_num_ray_samples,
+            init_value=0.0,
+            device="cuda"
+        )
+        print(f"  -> Initialized DualStaticVolume")
+        print(f"     - resolution = {opt.s3_voxel_resolution}³")
+        print(f"     - bbox = [{bbox[0].tolist()}, {bbox[1].tolist()}]")
+        print(f"     - ray samples = {opt.s3_num_ray_samples}")
+
+    # s4: Initialize TemporalEnsembleStatic for coarse (static warm-up) stage
+    temporal_ensemble_static = None
+    
+    if stage == 'coarse' and opt.use_s4_temporal_ensemble_static:
+        apply_s4_preset(opt)
+        
+        temporal_ensemble_static = TemporalEnsembleStatic(
+            avg_ct_path=opt.s4_avg_ct_path,
+            avg_proj_path=opt.s4_avg_proj_path,
+            bbox=bbox,
+            device="cuda"
+        )
+        print(f"  -> Initialized TemporalEnsembleStatic")
+        print(f"     - avg_ct_loaded = {temporal_ensemble_static.avg_ct_loaded}")
+        print(f"     - avg_proj_loaded = {temporal_ensemble_static.avg_proj_loaded}")
+        print(f"     - bbox = [{bbox[0].tolist()}, {bbox[1].tolist()}]")
 
     gaussians.training_setup(opt)
+    
+    # s1 方案A: Create separate optimizer for learnable weights
+    # NOTE: We use a separate optimizer to avoid conflicts with Gaussian densification/pruning
+    # The Gaussian optimizer prunes parameters based on Gaussian count, but α_j has fixed size [N_projections]
+    learnable_weights_optimizer = None
+    if learnable_static_weights is not None:
+        learnable_weights_optimizer = torch.optim.Adam(
+            learnable_static_weights.parameters(),
+            lr=opt.static_reweight_lr
+        )
+        print(f"  -> Created separate optimizer for learnable weights (α_j) with lr={opt.static_reweight_lr}")
+    
+    # s2: Create separate optimizer for phase-gated static parameters
+    # NOTE: We use a separate optimizer to avoid conflicts with Gaussian densification/pruning
+    phase_gated_optimizer = None
+    if phase_gated_static is not None:
+        phase_gated_optimizer = torch.optim.Adam(
+            phase_gated_static.parameters(),
+            lr=opt.static_phase_lr
+        )
+        print(f"  -> Created separate optimizer for phase-gated params (τ, ψ, φ_c, ξ) with lr={opt.static_phase_lr}")
+    
+    # s3: Create separate optimizer for dual static volume
+    # NOTE: We use a separate optimizer to avoid conflicts with Gaussian densification/pruning
+    dual_volume_optimizer = None
+    if dual_static_volume is not None:
+        dual_volume_optimizer = torch.optim.Adam(
+            dual_static_volume.parameters(),
+            lr=opt.s3_voxel_lr
+        )
+        print(f"  -> Created separate optimizer for voxel volume V with lr={opt.s3_voxel_lr}")
+    
     if checkpoint is not None:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
@@ -277,7 +550,22 @@ def scene_reconstruction(
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
 
         # Render X-ray projection
-        render_pkg = render(viewpoint_cam, gaussians, pipe, stage)
+        # V7.1-trainable-α: Use correction during training if enabled
+        use_train_correction = opt.use_trainable_alpha and stage == 'fine'
+        if use_train_correction:
+            # Get current time for this view
+            current_time = viewpoint_cam.time
+            # Get trainable alpha (scalar or time-dependent)
+            train_alpha = gaussians.get_alpha(current_time)
+            if train_alpha is None:
+                train_alpha = 0.0
+            render_pkg = render(
+                viewpoint_cam, gaussians, pipe, stage,
+                use_v7_1_correction=True,
+                correction_alpha=train_alpha if isinstance(train_alpha, float) else train_alpha.item() if not train_alpha.requires_grad else train_alpha
+            )
+        else:
+            render_pkg = render(viewpoint_cam, gaussians, pipe, stage)
         image, viewspace_point_tensor, visibility_filter, radii = (
             render_pkg["render"],
             render_pkg["viewspace_points"],
@@ -290,12 +578,263 @@ def scene_reconstruction(
         loss = {"total": 0.0}
         render_loss = l1_loss(image, gt_image)
         loss["render"] = render_loss
-        loss["total"] += loss["render"]
+        
+        # Compute combined render loss for s1 reweighting (L1 + D-SSIM)
+        combined_render_loss = render_loss.clone()
         if opt.lambda_dssim > 0:
             loss_dssim = 1.0 - ssim(image, gt_image)
             loss["dssim"] = loss_dssim
-            loss["total"] = loss["total"] + opt.lambda_dssim * loss_dssim
+            combined_render_loss = combined_render_loss + opt.lambda_dssim * loss_dssim
+        
+        # s1: Apply projection reliability-weighted reweighting in static warm-up stage
+        s1_weight = 1.0
+        s1_L_mean = 0.0
+        
+        if stage == 'coarse' and opt.use_static_reweighting:
+            proj_idx = viewpoint_cam.uid
+            
+            if opt.static_reweight_method == "residual" and static_reweight_manager is not None:
+                # 方案B: Residual-based reweighting (non-differentiable weight)
+                s1_weight = static_reweight_manager.get_weight_and_update(
+                    proj_idx=proj_idx,
+                    loss_value=combined_render_loss.detach().item(),
+                    iteration=iteration
+                )
+                loss["s1_weight"] = s1_weight
+                
+                # Apply weight to render loss and dssim loss
+                loss["total"] += s1_weight * loss["render"]
+                if opt.lambda_dssim > 0:
+                    loss["total"] = loss["total"] + s1_weight * opt.lambda_dssim * loss_dssim
+                    
+            elif opt.static_reweight_method == "learnable" and learnable_static_weights is not None:
+                # 方案A: Learnable per-projection weights (differentiable)
+                # Get learnable weight w_j = sigmoid(α_j)
+                w_j = learnable_static_weights.get_weight(proj_idx, iteration)
+                s1_weight = w_j.item() if isinstance(w_j, torch.Tensor) else w_j
+                loss["s1_weight"] = s1_weight
+                
+                # Apply weight to render loss: w_j * L_j
+                # Note: w_j is differentiable, so gradients flow to α_j
+                weighted_render_loss = w_j * loss["render"]
+                loss["total"] += weighted_render_loss
+                
+                if opt.lambda_dssim > 0:
+                    weighted_dssim_loss = w_j * opt.lambda_dssim * loss_dssim
+                    loss["total"] = loss["total"] + weighted_dssim_loss
+                
+                # Compute L_mean regularization (only after burn-in)
+                if iteration >= opt.static_reweight_burnin_steps:
+                    L_mean = learnable_static_weights.compute_mean_regularization_loss()
+                    s1_L_mean = L_mean.item()
+                    loss["s1_L_mean"] = s1_L_mean
+                    loss["total"] = loss["total"] + opt.lambda_static_reweight_mean * L_mean
+            else:
+                # Fallback: no s1 reweighting
+                loss["total"] += loss["render"]
+                if opt.lambda_dssim > 0:
+                    loss["total"] = loss["total"] + opt.lambda_dssim * loss_dssim
+        else:
+            # Original behavior (no s1 reweighting or not in coarse stage)
+            loss["total"] += loss["render"]
+            if opt.lambda_dssim > 0:
+                loss["total"] = loss["total"] + opt.lambda_dssim * loss_dssim
+        
+        # s2: Apply phase-gated weighting in static warm-up stage
+        # s2 can be combined with s1 - it multiplies an additional phase-based weight
+        s2_weight = 1.0
+        s2_L_win = 0.0
+        
+        if stage == 'coarse' and opt.use_phase_gated_static and phase_gated_static is not None:
+            # Get acquisition time t_j from camera
+            t_j = viewpoint_cam.time
+            
+            # Compute phase-gated weight w_j
+            w_j_s2 = phase_gated_static.compute_weight(t_j, iteration)
+            s2_weight = w_j_s2.item() if isinstance(w_j_s2, torch.Tensor) else w_j_s2
+            loss["s2_weight"] = s2_weight
+            
+            # Apply phase-gated weighting to the current total loss
+            # This multiplies the already computed loss by w_j_s2
+            # Note: If s1 is also enabled, the loss is already s1-weighted, and s2 adds another layer
+            if iteration >= opt.static_phase_burnin_steps:
+                # After burn-in: apply phase-gated weight
+                # Scale the render-related losses (already in loss["total"]) by w_j_s2
+                # We do this by scaling the entire current total loss contribution
+                # Recompute: instead of modifying existing total, we track s2 contribution separately
+                
+                # Get the render-related loss that was just added to total
+                render_related_loss = loss["render"].clone()
+                if opt.lambda_dssim > 0:
+                    render_related_loss = render_related_loss + opt.lambda_dssim * loss["dssim"]
+                
+                # If s1 is enabled, it already weighted the loss, so we apply s2 on top
+                if opt.use_static_reweighting:
+                    # s1 already applied its weight, now multiply by (w_j_s2 / 1.0)
+                    # This is equivalent to scaling by w_j_s2
+                    # We need to adjust: subtract old contribution, add s2-weighted contribution
+                    # Old contribution = s1_weight * render_related_loss (already added)
+                    # New contribution = s1_weight * w_j_s2 * render_related_loss
+                    # Adjustment = (w_j_s2 - 1) * s1_weight * render_related_loss
+                    adjustment = (w_j_s2 - 1.0) * s1_weight * render_related_loss
+                    loss["total"] = loss["total"] + adjustment
+                else:
+                    # No s1, just apply s2 weight
+                    # Old contribution = render_related_loss (already added)
+                    # New contribution = w_j_s2 * render_related_loss
+                    # Adjustment = (w_j_s2 - 1) * render_related_loss
+                    adjustment = (w_j_s2 - 1.0) * render_related_loss
+                    loss["total"] = loss["total"] + adjustment
+                
+                # Add window regularization loss L_win = (log(σ_φ) - log(σ_target))²
+                L_win = phase_gated_static.compute_window_regularization_loss()
+                s2_L_win = L_win.item()
+                loss["s2_L_win"] = s2_L_win
+                loss["total"] = loss["total"] + opt.lambda_static_phase_window * L_win
 
+        # s3: Dual-representation static warm-up (Gaussian + Voxel Co-Training)
+        # Only active in coarse stage when enabled
+        s3_L_V = 0.0
+        s3_L_distill = 0.0
+        s3_L_VTV = 0.0
+        
+        if stage == 'coarse' and opt.use_s3_dual_static_volume and dual_static_volume is not None:
+            # 1. Scale Gaussian projection loss by λ_G (already computed as render_loss + dssim)
+            # The Gaussian loss is already in loss["total"], we just need to scale it
+            # For simplicity, we apply λ_G by scaling the existing render contribution
+            # Note: If λ_G != 1.0, we need to adjust the contribution
+            if opt.lambda_s3_G != 1.0:
+                # Current loss["total"] already includes render_loss (with s1/s2 weights if applied)
+                # We need to scale the render-related portion by λ_G
+                # Get the render-related loss
+                render_related = loss["render"].clone()
+                if opt.lambda_dssim > 0:
+                    render_related = render_related + opt.lambda_dssim * loss["dssim"]
+                
+                # Calculate adjustment factor
+                # Current contribution: 1.0 * render_related (already in total)
+                # Desired contribution: λ_G * render_related
+                # Adjustment: (λ_G - 1.0) * render_related
+                # But we also need to account for s1/s2 weights if they were applied
+                effective_weight = 1.0
+                if opt.use_static_reweighting:
+                    effective_weight *= s1_weight
+                if opt.use_phase_gated_static:
+                    effective_weight *= s2_weight
+                
+                adjustment = (opt.lambda_s3_G - 1.0) * effective_weight * render_related
+                loss["total"] = loss["total"] + adjustment
+            
+            # 2. Render projection from Voxel volume V and compute L_V
+            image_V = dual_static_volume.render_projection(
+                camera=viewpoint_cam,
+                image_height=viewpoint_cam.image_height,
+                image_width=viewpoint_cam.image_width,
+                downsample_factor=opt.s3_downsample_factor
+            )
+            
+            # Downsample ground truth if needed
+            if opt.s3_downsample_factor > 1:
+                gt_image_ds = F.interpolate(
+                    gt_image.unsqueeze(0),
+                    scale_factor=1.0 / opt.s3_downsample_factor,
+                    mode='bilinear',
+                    align_corners=False
+                ).squeeze(0)
+            else:
+                gt_image_ds = gt_image
+            
+            # Compute L_V (voxel projection loss)
+            L_V_render = l1_loss(image_V, gt_image_ds)
+            loss["s3_L_V_render"] = L_V_render
+            s3_L_V = L_V_render.item()
+            
+            if opt.lambda_dssim > 0:
+                L_V_dssim = 1.0 - ssim(image_V, gt_image_ds)
+                loss["s3_L_V_dssim"] = L_V_dssim
+                L_V_total = L_V_render + opt.lambda_dssim * L_V_dssim
+            else:
+                L_V_total = L_V_render
+            
+            loss["s3_L_V"] = L_V_total
+            loss["total"] = loss["total"] + opt.lambda_s3_V * L_V_total
+            
+            # 3. Compute distillation loss L_distill = mean|σ_G(x) - V(x)|
+            L_distill = dual_static_volume.compute_distillation_loss(
+                gaussians=gaussians,
+                num_samples=opt.s3_num_distill_samples,
+                bbox=bbox
+            )
+            s3_L_distill = L_distill.item()
+            loss["s3_L_distill"] = L_distill
+            loss["total"] = loss["total"] + opt.lambda_s3_distill * L_distill
+            
+            # 4. Compute 3D TV loss on V: L_VTV
+            L_VTV = dual_static_volume.compute_tv_loss()
+            s3_L_VTV = L_VTV.item()
+            loss["s3_L_VTV"] = L_VTV
+            loss["total"] = loss["total"] + opt.lambda_s3_VTV * L_VTV
+            
+            # Update statistics
+            dual_static_volume._last_L_V = s3_L_V
+            dual_static_volume._last_L_distill = s3_L_distill
+            dual_static_volume._last_L_VTV = s3_L_VTV
+
+        # s4: Temporal-ensemble guided static warm-up
+        # Only active in coarse stage when enabled
+        s4_L_vol = 0.0
+        s4_L_proj_avg = 0.0
+        
+        if stage == 'coarse' and opt.use_s4_temporal_ensemble_static and temporal_ensemble_static is not None:
+            # 1. Scale Gaussian projection loss by λ_s4_G (if different from 1.0)
+            if opt.lambda_s4_G != 1.0:
+                render_related = loss["render"].clone()
+                if opt.lambda_dssim > 0:
+                    render_related = render_related + opt.lambda_dssim * loss["dssim"]
+                
+                # Calculate adjustment factor (accounting for s1/s2 weights if applied)
+                effective_weight = 1.0
+                if opt.use_static_reweighting:
+                    effective_weight *= s1_weight
+                if opt.use_phase_gated_static:
+                    effective_weight *= s2_weight
+                
+                adjustment = (opt.lambda_s4_G - 1.0) * effective_weight * render_related
+                loss["total"] = loss["total"] + adjustment
+            
+            # 2. Compute volume distillation loss L_vol = |σ_G(x) - V_avg(x)|
+            if temporal_ensemble_static.avg_ct_loaded and opt.lambda_s4_vol > 0:
+                L_vol = temporal_ensemble_static.compute_volume_distillation_loss(
+                    gaussians=gaussians,
+                    num_samples=opt.s4_num_vol_samples,
+                    bbox=bbox
+                )
+                s4_L_vol = L_vol.item()
+                loss["s4_L_vol"] = L_vol
+                loss["total"] = loss["total"] + opt.lambda_s4_vol * L_vol
+            
+            # 3. (Optional) Compute projection distillation loss L_proj_avg
+            # This requires matching view indices and average projection data
+            if temporal_ensemble_static.avg_proj_loaded and opt.lambda_s4_proj_avg > 0:
+                avg_proj = temporal_ensemble_static.get_avg_projection(viewpoint_cam.uid)
+                if avg_proj is not None:
+                    # Resize avg_proj to match rendered image size if needed
+                    if avg_proj.shape[-2:] != image.shape[-2:]:
+                        avg_proj = F.interpolate(
+                            avg_proj.unsqueeze(0),
+                            size=image.shape[-2:],
+                            mode='bilinear',
+                            align_corners=False
+                        ).squeeze(0)
+                    
+                    L_proj_avg = l1_loss(image, avg_proj)
+                    s4_L_proj_avg = L_proj_avg.item()
+                    loss["s4_L_proj_avg"] = L_proj_avg
+                    loss["total"] = loss["total"] + opt.lambda_s4_proj_avg * L_proj_avg
+            
+            # Update statistics
+            temporal_ensemble_static._last_L_vol = s4_L_vol
+            temporal_ensemble_static._last_L_proj_avg = s4_L_proj_avg
 
         # Prior loss
         if stage=='fine' and iteration > 7000:
@@ -335,7 +874,10 @@ def scene_reconstruction(
             loss["total"] = loss["total"] + tv_loss_4d
 
         # Inverse consistency loss and symmetry loss (only in fine stage when enabled)
-        if stage == 'fine' and opt.use_inverse_consistency and opt.lambda_inv > 0:
+        # NOTE: When V7.2 is enabled, L_inv is DISABLED because V7.2 uses D_b in the
+        # main rendering path instead of as a regularization tool
+        use_v7_2 = getattr(opt, 'use_v7_2_consistency', False) and gaussians.use_v7_2_consistency
+        if stage == 'fine' and opt.use_inverse_consistency and opt.lambda_inv > 0 and not use_v7_2:
             time_tensor = torch.tensor(viewpoint_cam.time).to(gaussians.get_xyz.device).repeat(gaussians.get_xyz.shape[0], 1)
             
             # Check if symmetry loss should also be computed
@@ -418,6 +960,200 @@ def scene_reconstruction(
             loss["traj_smooth"] = loss_traj
             loss["total"] = loss["total"] + opt.lambda_traj * loss_traj
 
+        # V7.1-trainable-α: Alpha regularization loss (only if NOT using V7.2)
+        # L_alpha_reg = lambda_alpha * (alpha - alpha_init)^2
+        if stage == 'fine' and opt.use_trainable_alpha and not use_v7_2:
+            loss_alpha_reg = gaussians.compute_alpha_regularization_loss()
+            if loss_alpha_reg > 0:
+                loss["alpha_reg"] = loss_alpha_reg
+                loss["total"] = loss["total"] + loss_alpha_reg
+                # Log current alpha value
+                current_alpha = gaussians.get_alpha(viewpoint_cam.time)
+                if current_alpha is not None:
+                    if isinstance(current_alpha, torch.Tensor):
+                        loss["alpha"] = current_alpha.item() if current_alpha.numel() == 1 else current_alpha.mean().item()
+                    else:
+                        loss["alpha"] = current_alpha
+
+        # V7.2: End-to-End Consistency-Aware losses
+        # When V7.2 is enabled:
+        # - L_inv is DISABLED (handled above)
+        # - L_b = |D_b(y, t)| is added as lightweight regularization on backward field
+        # - L_alpha = (alpha - alpha_init)^2 keeps alpha close to initial value
+        if stage == 'fine' and use_v7_2:
+            time_tensor = torch.tensor(viewpoint_cam.time).to(gaussians.get_xyz.device).repeat(gaussians.get_xyz.shape[0], 1)
+            
+            # L_b: Backward field magnitude regularization
+            v7_2_lambda_b = getattr(opt, 'v7_2_lambda_b_reg', 1e-3)
+            if v7_2_lambda_b > 0:
+                loss_b = gaussians.compute_backward_magnitude_loss(time_tensor, sample_ratio=0.1)
+                loss["v7_2_L_b"] = loss_b
+                loss["total"] = loss["total"] + v7_2_lambda_b * loss_b
+            
+            # L_alpha: Alpha regularization (keep alpha close to init)
+            v7_2_lambda_alpha = getattr(opt, 'v7_2_lambda_alpha_reg', 1e-3)
+            if v7_2_lambda_alpha > 0 and gaussians.v7_2_alpha_learnable:
+                loss_alpha_v7_2 = gaussians.compute_v7_2_alpha_regularization_loss()
+                loss["v7_2_L_alpha"] = loss_alpha_v7_2
+                loss["total"] = loss["total"] + v7_2_lambda_alpha * loss_alpha_v7_2
+            
+            # Log current V7.2 alpha value
+            v7_2_alpha = gaussians.get_v7_2_alpha()
+            if v7_2_alpha is not None:
+                loss["v7_2_alpha"] = v7_2_alpha.item() if isinstance(v7_2_alpha, torch.Tensor) else v7_2_alpha
+            
+            # V7.2.1: L_cycle_canon - Canonical-space cycle consistency
+            # Only enabled when use_v7_2_1_cycle_canon=True on top of V7.2
+            use_v7_2_1_cycle_canon = getattr(opt, 'use_v7_2_1_cycle_canon', False)
+            if use_v7_2_1_cycle_canon:
+                v7_2_1_lambda_cycle_canon = getattr(opt, 'v7_2_1_lambda_cycle_canon', 1e-3)
+                if v7_2_1_lambda_cycle_canon > 0:
+                    loss_cycle_canon = gaussians.compute_cycle_canon_loss(time, sample_ratio=1.0)
+                    loss["v7_2_1_L_cycle_canon"] = loss_cycle_canon
+                    loss["total"] = loss["total"] + v7_2_1_lambda_cycle_canon * loss_cycle_canon
+            
+            # V7.3: Temporal Bidirectional Warp Consistency
+            # Only enabled when use_v7_3_timewarp=True on top of V7.2
+            use_v7_3_timewarp = getattr(opt, 'use_v7_3_timewarp', False)
+            if use_v7_3_timewarp:
+                v7_3_lambda_fw = getattr(opt, 'v7_3_lambda_fw', 1e-3)
+                v7_3_lambda_bw = getattr(opt, 'v7_3_lambda_bw', 1e-3)
+                v7_3_lambda_fw_bw = getattr(opt, 'v7_3_lambda_fw_bw', 0.0)
+                v7_3_delta_fraction = getattr(opt, 'v7_3_timewarp_delta_fraction', 0.1)
+                
+                timewarp_losses = gaussians.compute_timewarp_loss(
+                    time,
+                    delta_fraction=v7_3_delta_fraction,
+                    compute_fw_bw=(v7_3_lambda_fw_bw > 0),
+                    sample_ratio=1.0
+                )
+                
+                # L_fw: time-forward consistency
+                if v7_3_lambda_fw > 0:
+                    loss["v7_3_L_fw"] = timewarp_losses["L_fw"]
+                    loss["total"] = loss["total"] + v7_3_lambda_fw * timewarp_losses["L_fw"]
+                
+                # L_bw: time-backward consistency
+                if v7_3_lambda_bw > 0:
+                    loss["v7_3_L_bw"] = timewarp_losses["L_bw"]
+                    loss["total"] = loss["total"] + v7_3_lambda_bw * timewarp_losses["L_bw"]
+                
+                # L_fw_bw: optional round-trip closure
+                if v7_3_lambda_fw_bw > 0 and "L_fw_bw" in timewarp_losses:
+                    loss["v7_3_L_fw_bw"] = timewarp_losses["L_fw_bw"]
+                    loss["total"] = loss["total"] + v7_3_lambda_fw_bw * timewarp_losses["L_fw_bw"]
+            
+            # V7.3.1: Temporal regularization for covariance (scale) and density
+            # Only enabled when use_v7_3_1_sigma_rho=True on top of V7.2
+            use_v7_3_1_sigma_rho = getattr(opt, 'use_v7_3_1_sigma_rho', False)
+            if use_v7_3_1_sigma_rho:
+                sigma_rho_losses = gaussians.compute_sigma_rho_temporal_losses(
+                    time, opt, sample_ratio=1.0
+                )
+                
+                v7_3_1_lambda_tv_rho = getattr(opt, 'v7_3_1_lambda_tv_rho', 1e-4)
+                v7_3_1_lambda_tv_sigma = getattr(opt, 'v7_3_1_lambda_tv_sigma', 1e-4)
+                v7_3_1_lambda_cycle_rho = getattr(opt, 'v7_3_1_lambda_cycle_rho', 1e-4)
+                v7_3_1_lambda_cycle_sigma = getattr(opt, 'v7_3_1_lambda_cycle_sigma', 1e-4)
+                
+                # L_tv_sigma: temporal smoothness for scale
+                if v7_3_1_lambda_tv_sigma > 0:
+                    loss["v7_3_1_L_tv_sigma"] = sigma_rho_losses["L_tv_sigma"]
+                    loss["total"] = loss["total"] + v7_3_1_lambda_tv_sigma * sigma_rho_losses["L_tv_sigma"]
+                
+                # L_cycle_sigma: periodic consistency for scale
+                if v7_3_1_lambda_cycle_sigma > 0:
+                    loss["v7_3_1_L_cycle_sigma"] = sigma_rho_losses["L_cycle_sigma"]
+                    loss["total"] = loss["total"] + v7_3_1_lambda_cycle_sigma * sigma_rho_losses["L_cycle_sigma"]
+                
+                # L_tv_rho: temporal smoothness for density (only if density is dynamic)
+                if v7_3_1_lambda_tv_rho > 0:
+                    loss["v7_3_1_L_tv_rho"] = sigma_rho_losses["L_tv_rho"]
+                    loss["total"] = loss["total"] + v7_3_1_lambda_tv_rho * sigma_rho_losses["L_tv_rho"]
+                
+                # L_cycle_rho: periodic consistency for density (only if density is dynamic)
+                if v7_3_1_lambda_cycle_rho > 0:
+                    loss["v7_3_1_L_cycle_rho"] = sigma_rho_losses["L_cycle_rho"]
+                    loss["total"] = loss["total"] + v7_3_1_lambda_cycle_rho * sigma_rho_losses["L_cycle_rho"]
+            
+            # V7.4: Canonical decode losses for shape (Sigma) and density
+            # Only enabled when use_v7_4_canonical_decode=True on top of V7.2
+            use_v7_4_canonical_decode = getattr(opt, 'use_v7_4_canonical_decode', False)
+            if use_v7_4_canonical_decode:
+                canon_losses = gaussians.compute_canonical_sigma_rho_losses(
+                    time, opt, sample_ratio=1.0
+                )
+                
+                v7_4_lambda_cycle_sigma = getattr(opt, 'v7_4_lambda_cycle_canon_sigma', 1e-4)
+                v7_4_lambda_cycle_rho = getattr(opt, 'v7_4_lambda_cycle_canon_rho', 1e-4)
+                v7_4_lambda_prior_sigma = getattr(opt, 'v7_4_lambda_prior_sigma', 1e-4)
+                v7_4_lambda_prior_rho = getattr(opt, 'v7_4_lambda_prior_rho', 1e-4)
+                
+                # L_cycle_canon_Sigma: canonical shape periodic consistency
+                if v7_4_lambda_cycle_sigma > 0:
+                    loss["v7_4_L_cycle_canon_Sigma"] = canon_losses["L_cycle_canon_Sigma"]
+                    loss["total"] = loss["total"] + v7_4_lambda_cycle_sigma * canon_losses["L_cycle_canon_Sigma"]
+                
+                # L_cycle_canon_rho: canonical density periodic consistency
+                if v7_4_lambda_cycle_rho > 0:
+                    loss["v7_4_L_cycle_canon_rho"] = canon_losses["L_cycle_canon_rho"]
+                    loss["total"] = loss["total"] + v7_4_lambda_cycle_rho * canon_losses["L_cycle_canon_rho"]
+                
+                # L_prior_Sigma: canonical shape prior (close to base)
+                if v7_4_lambda_prior_sigma > 0:
+                    loss["v7_4_L_prior_Sigma"] = canon_losses["L_prior_Sigma"]
+                    loss["total"] = loss["total"] + v7_4_lambda_prior_sigma * canon_losses["L_prior_Sigma"]
+                
+                # L_prior_rho: canonical density prior (close to base)
+                if v7_4_lambda_prior_rho > 0:
+                    loss["v7_4_L_prior_rho"] = canon_losses["L_prior_rho"]
+                    loss["total"] = loss["total"] + v7_4_lambda_prior_rho * canon_losses["L_prior_rho"]
+            
+            # V7.5: Full time-warp consistency losses for shape and density
+            # Only enabled when use_v7_5_full_timewarp=True on top of V7.2+V7.4
+            use_v7_5_full_timewarp = getattr(opt, 'use_v7_5_full_timewarp', False)
+            if use_v7_5_full_timewarp:
+                timewarp_losses = gaussians.compute_full_timewarp_sigma_rho_losses(
+                    means3D, time, opt, sample_ratio=0.1
+                )
+                
+                v7_5_lambda_fw_sigma = getattr(opt, 'v7_5_lambda_fw_sigma', 1e-5)
+                v7_5_lambda_fw_rho = getattr(opt, 'v7_5_lambda_fw_rho', 1e-5)
+                v7_5_lambda_bw_sigma = getattr(opt, 'v7_5_lambda_bw_sigma', 0.0)
+                v7_5_lambda_bw_rho = getattr(opt, 'v7_5_lambda_bw_rho', 0.0)
+                v7_5_lambda_rt_sigma = getattr(opt, 'v7_5_lambda_rt_sigma', 0.0)
+                v7_5_lambda_rt_rho = getattr(opt, 'v7_5_lambda_rt_rho', 0.0)
+                
+                # L_fw_Sigma: forward warp shape consistency
+                if v7_5_lambda_fw_sigma > 0:
+                    loss["v7_5_L_fw_Sigma"] = timewarp_losses["L_fw_Sigma"]
+                    loss["total"] = loss["total"] + v7_5_lambda_fw_sigma * timewarp_losses["L_fw_Sigma"]
+                
+                # L_fw_rho: forward warp density consistency
+                if v7_5_lambda_fw_rho > 0:
+                    loss["v7_5_L_fw_rho"] = timewarp_losses["L_fw_rho"]
+                    loss["total"] = loss["total"] + v7_5_lambda_fw_rho * timewarp_losses["L_fw_rho"]
+                
+                # L_bw_Sigma: backward warp shape consistency (optional)
+                if v7_5_lambda_bw_sigma > 0:
+                    loss["v7_5_L_bw_Sigma"] = timewarp_losses["L_bw_Sigma"]
+                    loss["total"] = loss["total"] + v7_5_lambda_bw_sigma * timewarp_losses["L_bw_Sigma"]
+                
+                # L_bw_rho: backward warp density consistency (optional)
+                if v7_5_lambda_bw_rho > 0:
+                    loss["v7_5_L_bw_rho"] = timewarp_losses["L_bw_rho"]
+                    loss["total"] = loss["total"] + v7_5_lambda_bw_rho * timewarp_losses["L_bw_rho"]
+                
+                # L_rt_Sigma: round-trip shape consistency (optional, placeholder)
+                if v7_5_lambda_rt_sigma > 0:
+                    loss["v7_5_L_rt_Sigma"] = timewarp_losses["L_rt_Sigma"]
+                    loss["total"] = loss["total"] + v7_5_lambda_rt_sigma * timewarp_losses["L_rt_Sigma"]
+                
+                # L_rt_rho: round-trip density consistency (optional, placeholder)
+                if v7_5_lambda_rt_rho > 0:
+                    loss["v7_5_L_rt_rho"] = timewarp_losses["L_rt_rho"]
+                    loss["total"] = loss["total"] + v7_5_lambda_rt_rho * timewarp_losses["L_rt_rho"]
+
         loss["total"].backward()
         iter_end.record()
         torch.cuda.synchronize()
@@ -452,6 +1188,21 @@ def scene_reconstruction(
             if iteration < train_iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none=True)
+                
+                # s1 方案A: Step learnable weights optimizer (separate from Gaussian optimizer)
+                if learnable_weights_optimizer is not None:
+                    learnable_weights_optimizer.step()
+                    learnable_weights_optimizer.zero_grad(set_to_none=True)
+                
+                # s2: Step phase-gated optimizer (separate from Gaussian optimizer)
+                if phase_gated_optimizer is not None:
+                    phase_gated_optimizer.step()
+                    phase_gated_optimizer.zero_grad(set_to_none=True)
+                
+                # s3: Step dual static volume optimizer (separate from Gaussian optimizer)
+                if dual_volume_optimizer is not None:
+                    dual_volume_optimizer.step()
+                    dual_volume_optimizer.zero_grad(set_to_none=True)
 
             # Save gaussians
             if iteration in saving_iterations or iteration == train_iterations:
@@ -481,11 +1232,69 @@ def scene_reconstruction(
             # Logging
             metrics = {}
             for l in loss:
-                metrics["loss_" + l] = loss[l].item()
+                # Handle both tensor and float values (s1_weight, s1_L_mean are floats)
+                if isinstance(loss[l], (int, float)):
+                    metrics["loss_" + l] = loss[l]
+                else:
+                    metrics["loss_" + l] = loss[l].item()
             for param_group in gaussians.optimizer.param_groups:
                 metrics[f"lr_{param_group['name']}"] = param_group["lr"]
 
             metrics['period'] = math.exp(gaussians.period.item())
+            
+            # s1: Log reweighting statistics during static warm-up
+            if stage == 'coarse' and opt.use_static_reweighting:
+                metrics['s1_weight'] = s1_weight
+                
+                if opt.static_reweight_method == "residual" and static_reweight_manager is not None:
+                    # Log detailed statistics every 500 iterations
+                    if iteration % 500 == 0:
+                        s1_stats = static_reweight_manager.get_statistics()
+                        for key, value in s1_stats.items():
+                            metrics[f's1_{key}'] = value
+                            
+                elif opt.static_reweight_method == "learnable" and learnable_static_weights is not None:
+                    metrics['s1_L_mean'] = s1_L_mean
+                    # Log detailed statistics every 500 iterations
+                    if iteration % 500 == 0:
+                        s1_stats = learnable_static_weights.get_statistics()
+                        for key, value in s1_stats.items():
+                            metrics[f's1_{key}'] = value
+            
+            # s2: Log phase-gated statistics during static warm-up
+            if stage == 'coarse' and opt.use_phase_gated_static and phase_gated_static is not None:
+                metrics['s2_weight'] = s2_weight
+                metrics['s2_L_win'] = s2_L_win
+                
+                # Log detailed statistics every 500 iterations
+                if iteration % 500 == 0:
+                    s2_stats = phase_gated_static.get_statistics()
+                    for key, value in s2_stats.items():
+                        metrics[f's2_{key}'] = value
+            
+            # s3: Log dual static volume statistics during static warm-up
+            if stage == 'coarse' and opt.use_s3_dual_static_volume and dual_static_volume is not None:
+                metrics['s3_L_V'] = s3_L_V
+                metrics['s3_L_distill'] = s3_L_distill
+                metrics['s3_L_VTV'] = s3_L_VTV
+                
+                # Log detailed statistics every 500 iterations
+                if iteration % 500 == 0:
+                    s3_stats = dual_static_volume.get_statistics()
+                    for key, value in s3_stats.items():
+                        metrics[f's3_{key}'] = value
+            
+            # s4: Log temporal-ensemble statistics during static warm-up
+            if stage == 'coarse' and opt.use_s4_temporal_ensemble_static and temporal_ensemble_static is not None:
+                metrics['s4_L_vol'] = s4_L_vol
+                metrics['s4_L_proj_avg'] = s4_L_proj_avg
+                
+                # Log detailed statistics every 500 iterations
+                if iteration % 500 == 0:
+                    s4_stats = temporal_ensemble_static.get_statistics()
+                    for key, value in s4_stats.items():
+                        if not isinstance(value, list):  # Skip shape info
+                            metrics[f's4_{key}'] = value
 
             training_report(
                 tb_writer,

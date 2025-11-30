@@ -9,6 +9,13 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 import sys
+import os
+
+# 强制使用 origin 目录下的模块
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_submodules_path = os.path.abspath(os.path.join(_current_dir, "..", "submodules", "xray-gaussian-rasterization-voxelization"))
+sys.path.insert(0, _submodules_path)
+
 import torch
 import math
 from xray_gaussian_rasterization_voxelization import (
@@ -34,6 +41,8 @@ def query(
     time=0.1,
     stage='fine',
     scaling_modifier=1.0,
+    use_v7_1_correction=False,
+    correction_alpha=0.0,
 ):
     """
     Query a volume with voxelization.
@@ -73,7 +82,13 @@ def query(
     if stage=='coarse':
         means3D_final, scales_final, rotations_final = means3D, scales, rotations
     else:
-        means3D_final, scales_final, rotations_final = pc._deformation(means3D, scales, rotations, density, time)
+        # Use V7.1 correction if enabled, otherwise use standard V7 deformation
+        if use_v7_1_correction and correction_alpha != 0.0:
+            means3D_final, scales_final, rotations_final = pc.get_deformed_centers(
+                time, use_v7_1_correction=True, correction_alpha=correction_alpha
+            )
+        else:
+            means3D_final, scales_final, rotations_final = pc._deformation(means3D, scales, rotations, density, time)
     scales_final = pc.scaling_activation(scales_final)
     rotations_final = pc.rotation_activation(rotations_final)
 
@@ -97,6 +112,8 @@ def render(
     pipe: PipelineParams,
     stage='fine',
     scaling_modifier=1.0,
+    use_v7_1_correction=False,
+    correction_alpha=0.0,
 ):
     """
     Render an X-ray projection with rasterization.
@@ -167,8 +184,13 @@ def render(
     if stage=='coarse':
         means3D_final, scales_final, rotations_final = means3D, scales, rotations
     else:
-        # breakpoint()
-        means3D_final, scales_final, rotations_final = pc._deformation(means3D, scales, rotations, density, time)
+        # Use V7.1 correction if enabled, otherwise use standard V7 deformation
+        if use_v7_1_correction and correction_alpha != 0.0:
+            means3D_final, scales_final, rotations_final = pc.get_deformed_centers(
+                time, use_v7_1_correction=True, correction_alpha=correction_alpha
+            )
+        else:
+            means3D_final, scales_final, rotations_final = pc._deformation(means3D, scales, rotations, density, time)
     scales_final = pc.scaling_activation(scales_final)
     rotations_final = pc.rotation_activation(rotations_final)
 

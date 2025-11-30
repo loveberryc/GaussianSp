@@ -10,7 +10,18 @@ from x2_gaussian.utils.graphics_utils import fetchPly
 from x2_gaussian.utils.system_utils import searchForMaxIteration
 
 
-def initialize_gaussian(gaussians: GaussianModel, args: ModelParams, loaded_iter=None):
+def initialize_gaussian(gaussians: GaussianModel, args: ModelParams, loaded_iter=None,
+                        custom_positions=None, custom_densities=None):
+    """
+    Initialize Gaussians from various sources.
+    
+    Args:
+        gaussians: GaussianModel to initialize
+        args: ModelParams with paths
+        loaded_iter: Iteration to load from (if resuming)
+        custom_positions: Optional custom positions [N, 3] for s4_2 init
+        custom_densities: Optional custom densities [N] for s4_2 init
+    """
     if loaded_iter:
         if loaded_iter == -1:
             loaded_iter = searchForMaxIteration(
@@ -31,6 +42,12 @@ def initialize_gaussian(gaussians: GaussianModel, args: ModelParams, loaded_iter
                                         "point_cloud",
                                         "iteration_" + str(loaded_iter),
                                                    ))
+    elif custom_positions is not None and custom_densities is not None:
+        # s4_2: Initialize from custom positions and densities (from avg CT)
+        print(f"Initialize Gaussians from custom positions ({len(custom_positions)} points)")
+        xyz = custom_positions
+        density = custom_densities.reshape(-1, 1)
+        gaussians.create_from_pcd(xyz, density, 1.0)
     else:
         if args.ply_path == "":
             if osp.exists(osp.join(args.source_path, "meta_data.json")):
