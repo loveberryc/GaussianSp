@@ -444,6 +444,24 @@ class OptimizationParams(ParamGroup):
         self.v7_5_lambda_rt_rho = 0.0  # Weight for round-trip density loss (optional)
         self.v7_5_timewarp_delta_fraction = 0.25  # Δt = fraction * T̂ for time-warp
         
+        # V7.5.1: Full-State Bidirectional Time-Warp Consistency
+        # =====================================================================
+        # V7.5.1 extends the bidirectional time-warp consistency to the full
+        # Gaussian state (center, covariance, density).
+        #
+        # Key changes from V7.5:
+        #   - Center: Ensures forward + backward losses are both active
+        #   - Σ/ρ: Enables backward warp in addition to forward warp
+        #
+        # When use_v7_5_1_roundtrip_full_state=True:
+        #   - Center uses L_fw + L_bw from V7.3 (both active)
+        #   - Σ/ρ uses L_fw + L_bw (both active)
+        #
+        # Backward for Σ/ρ:
+        #   L_bw_Sigma = |s_bw(t1|t2) - s(t1)|, canonical(t2) warped to t1
+        #   L_bw_rho = |ρ_bw(t1|t2) - ρ(t1)|, canonical(t2) warped to t1
+        self.use_v7_5_1_roundtrip_full_state = False  # Enable full-state bidirectional consistency
+        
         # s5: 4D Dynamic-Aware Multi-Phase FDK Point Cloud Initialization
         # =====================================================================
         # s5 is an alternative initialization strategy that uses multi-phase FDK

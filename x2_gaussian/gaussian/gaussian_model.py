@@ -695,6 +695,59 @@ class GaussianModel:
                 print(f"[V7.1] Saved alpha network state")
             if alpha_state:
                 torch.save(alpha_state, os.path.join(path, "alpha.pth"))
+    
+    def load_from_model_path(self, model_path, training_args):
+        """
+        Load model state from a saved model directory (e.g., point_cloud/iteration_30000).
+        This allows continuing training from a saved model.
+        
+        Args:
+            model_path: Path to the saved model directory containing:
+                - point_cloud.pickle (Gaussian parameters)
+                - deformation.pth (deformation network state)
+                - deformation_table.pth (deformation table)
+                - deformation_accum.pth (gradient accumulation)
+            training_args: Training arguments for setting up optimizer
+        """
+        # Load Gaussian parameters from pickle
+        ply_path = os.path.join(model_path, "point_cloud.pickle")
+        if not os.path.exists(ply_path):
+            raise FileNotFoundError(f"point_cloud.pickle not found in {model_path}")
+        self.load_ply(ply_path)
+        print(f"Loaded Gaussian parameters from {ply_path}")
+        
+        # Load deformation network state
+        deform_path = os.path.join(model_path, "deformation.pth")
+        if os.path.exists(deform_path):
+            self._deformation.load_state_dict(torch.load(deform_path))
+            print(f"Loaded deformation network from {deform_path}")
+        
+        # Load deformation table
+        deform_table_path = os.path.join(model_path, "deformation_table.pth")
+        if os.path.exists(deform_table_path):
+            self._deformation_table = torch.load(deform_table_path)
+            print(f"Loaded deformation table from {deform_table_path}")
+        
+        # Load deformation gradient accumulation
+        deform_accum_path = os.path.join(model_path, "deformation_accum.pth")
+        if os.path.exists(deform_accum_path):
+            self._deformation_accum = torch.load(deform_accum_path)
+            print(f"Loaded deformation accum from {deform_accum_path}")
+        
+        # Load alpha parameters (V7.1)
+        alpha_path = os.path.join(model_path, "alpha.pth")
+        if os.path.exists(alpha_path):
+            alpha_state = torch.load(alpha_path)
+            if "alpha" in alpha_state and self._alpha is not None:
+                self._alpha.data = alpha_state["alpha"]
+                print(f"[V7.1] Loaded scalar alpha = {self._alpha.item():.4f}")
+            if "alpha_network" in alpha_state and self._alpha_network is not None:
+                self._alpha_network.load_state_dict(alpha_state["alpha_network"])
+                print(f"[V7.1] Loaded alpha network state")
+        
+        # Set up optimizer (fresh optimizer since we don't have optimizer state)
+        self.training_setup(training_args)
+        print(f"Initialized fresh optimizer (optimizer state not saved in model checkpoint)")
 
     def save_ply(self, path):
         # We save pickle files to store more information
@@ -2414,15 +2467,22 @@ class GaussianModel:
         L_fw_rho = torch.abs(rho_fw_t2_pred - rho_dyn_t2).mean()
         
         # =========== Step 5: Backward timewarp: canonical at t2 -> dynamic at t1 (optional) ===========
+        # Time embedding for t1 (needed for backward and round-trip)
+        t1_scalar = t1[0, 0] if t1.dim() == 2 else t1[0]
+        t1_embed = self._v7_5_time_mlp(t1_scalar.view(1, 1))  # (1, time_embed_dim)
+        t1_embed_expanded = t1_embed.expand(s_canon_t2.shape[0], -1)  # (N, time_embed_dim)
+        
         lambda_bw_sigma = getattr(args, 'v7_5_lambda_bw_sigma', 0.0)
         lambda_bw_rho = getattr(args, 'v7_5_lambda_bw_rho', 0.0)
+        use_v7_5_1 = getattr(args, 'use_v7_5_1_roundtrip_full_state', False)
+        
+        # V7.5.1: Enable backward warp with default weights
+        if use_v7_5_1 and lambda_bw_sigma == 0.0:
+            lambda_bw_sigma = 1e-5
+        if use_v7_5_1 and lambda_bw_rho == 0.0:
+            lambda_bw_rho = 1e-5
         
         if lambda_bw_sigma > 0 or lambda_bw_rho > 0:
-            # Time embedding for t1
-            t1_scalar = t1[0, 0] if t1.dim() == 2 else t1[0]
-            t1_embed = self._v7_5_time_mlp(t1_scalar.view(1, 1))  # (1, time_embed_dim)
-            t1_embed_expanded = t1_embed.expand(s_canon_t2.shape[0], -1)  # (N, time_embed_dim)
-            
             # Shape backward warp: canonical log-scale at t2 + t1_embed -> predicted log-scale at t1
             shape_input_bw = torch.cat([s_canon_t2, t1_embed_expanded], dim=-1)
             s_bw_t1_pred = self._v7_5_shape_timewarp_head(shape_input_bw)
@@ -2437,11 +2497,28 @@ class GaussianModel:
             L_bw_Sigma = zero
             L_bw_rho = zero
         
-        # =========== Step 6: Round-trip warp (optional, set to zero for now) ===========
-        # Round-trip: t1 -> t2 -> t1 would be expensive and complex
-        # We leave it as a placeholder for future implementation
-        L_rt_Sigma = zero
-        L_rt_rho = zero
+        # =========== Step 6: Round-trip warp (optional) ===========
+        # Round-trip for Σ/ρ: t1 -> canonical(t1) -> t2 -> canonical(t2) -> t1
+        # This is an optional loss, not used by default in V7.5.1 (which uses backward instead).
+        
+        lambda_rt_sigma = getattr(args, 'v7_5_lambda_rt_sigma', 0.0)
+        lambda_rt_rho = getattr(args, 'v7_5_lambda_rt_rho', 0.0)
+        
+        if lambda_rt_sigma > 0 or lambda_rt_rho > 0:
+            # Round-trip shape: canonical log-scale at t2 + t1_embed -> predicted log-scale at t1
+            # Same network as backward warp, just different interpretation
+            shape_input_rt = torch.cat([s_canon_t2, t1_embed_expanded], dim=-1)
+            s_rt_t1_pred = self._v7_5_shape_timewarp_head(shape_input_rt)
+            
+            # Round-trip density: canonical density at t2 + t1_embed -> predicted density at t1
+            dens_input_rt = torch.cat([rho_canon_t2, t1_embed_expanded], dim=-1)
+            rho_rt_t1_pred = self._v7_5_dens_timewarp_head(dens_input_rt)
+            
+            L_rt_Sigma = torch.abs(s_rt_t1_pred - s_dyn_t1).mean()
+            L_rt_rho = torch.abs(rho_rt_t1_pred - rho_dyn_t1).mean()
+        else:
+            L_rt_Sigma = zero
+            L_rt_rho = zero
         
         return {
             "L_fw_Sigma": L_fw_Sigma,
