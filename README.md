@@ -87,7 +87,75 @@ python train.py -s <path to data>
 
 # Example
 python train.py -s XXX/*.pickle  
+```
 
+### Checkpointing and Continue Training
+
+训练过程支持保存 checkpoint 并从 checkpoint 继续训练。
+
+#### 保存方式对比
+
+| 保存类型 | 内容 | 保存位置 | 用途 |
+|---------|------|---------|------|
+| **Model Save** (`--save_iterations`) | 模型权重（Gaussians + Deformation） | `output/xxx/point_cloud/iteration_N/` | 用于推理、评估 |
+| **Checkpoint** (`--checkpoint_iterations`) | 模型权重 + 优化器状态 + iteration | `output/xxx/ckpt/chkpntN.pth` | 用于**完美**继续训练 |
+
+#### 推荐：使用 `--save_checkpoint` 自动保存 checkpoint
+
+```sh
+# --save_checkpoint 会在 save_iterations 时同时保存 checkpoint
+python train.py -s XXX/*.pickle --iterations 30000 \
+  --save_iterations 30000 \
+  --save_checkpoint \
+  --dirname my_experiment
+```
+
+等效于：
+```sh
+python train.py -s XXX/*.pickle --iterations 30000 \
+  --save_iterations 30000 \
+  --checkpoint_iterations 30000 \
+  --dirname my_experiment
+```
+
+#### 继续训练方式
+
+**方式一：从 Checkpoint 继续（推荐，完美恢复）**
+
+```sh
+# 从 checkpoint 继续训练到 50000 iterations
+# checkpoint 包含：模型权重 + 优化器状态 + 当前 iteration
+python train.py -s XXX/*.pickle --iterations 50000 \
+  --save_iterations 50000 \
+  --save_checkpoint \
+  --dirname my_experiment_50k \
+  --start_checkpoint output/xxx/ckpt/chkpnt30000.pth
+```
+
+**方式二：从保存的模型继续（仅恢复模型权重）**
+
+```sh
+# 从保存的模型目录继续训练
+# 注意：优化器状态会重置，需要指定 --start_iteration
+python train.py -s XXX/*.pickle --iterations 50000 \
+  --save_iterations 50000 \
+  --save_checkpoint \
+  --dirname my_experiment_50k \
+  --load_model_path output/xxx/point_cloud/iteration_30000 \
+  --start_iteration 30000
+```
+
+#### 两种继续方式的区别
+
+| 方面 | `--start_checkpoint` | `--load_model_path` |
+|------|---------------------|---------------------|
+| 模型权重 | ✓ 恢复 | ✓ 恢复 |
+| 优化器状态 (momentum) | ✓ 恢复 | ✗ 重置 |
+| 训练 iteration | ✓ 自动恢复 | 需指定 `--start_iteration` |
+| **效果** | **完全等效继续** | 近似继续（优化器无momentum） |
+| **推荐场景** | 正常继续训练 | 没有保存checkpoint时的备选方案 |
+
+```sh
 #############################################################################
 # V7 MAIN MODEL (RECOMMENDED for paper experiments)
 #############################################################################
@@ -387,7 +455,8 @@ nohup python train.py -s /root/autodl-tmp/4dctgs/x2-gaussian-main/x2-gaussian-ma
 nohup python train.py -s /root/autodl-tmp/4dctgs/x2-gaussian-main/x2-gaussian-main-origin/data/dir_4d_case2.pickle \
   --coarse_iter 5000 --iterations 30000 \
   --test_iterations 5000 7000 10000 20000 30000 \
-  --save_iterations 30000 --dirname dir_4d_case2_v7.2.1_cycle_canon \
+  --save_iterations 30000 --save_checkpoint\
+  --dirname dir_4d_case2_v7.2.1_cycle_canon \
   --use_v7_bidirectional_displacement --lambda_cycle 0.1 \
   --use_v7_2_consistency --v7_2_alpha_init 0.3 --v7_2_alpha_learnable \
   --v7_2_lambda_b_reg 1e-3 --v7_2_lambda_alpha_reg 1e-3 \
@@ -429,6 +498,18 @@ nohup python train.py -s /root/autodl-tmp/4dctgs/x2-gaussian-main/x2-gaussian-ma
   --v7_3_timewarp_delta_fraction 0.1 \
   > train_v7.3_timewarp_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
 
+nohup python train.py -s /root/autodl-tmp/4dctgs/x2-gaussian-main/x2-gaussian-main-origin/data/dir_4d_case1.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 7000 10000 20000 30000 \
+  --save_iterations 30000 --dirname dir_4d_case1_v7.3_timewarp \
+  --use_v7_bidirectional_displacement --lambda_cycle 0.1 \
+  --use_v7_2_consistency --v7_2_alpha_init 0.3 --v7_2_alpha_learnable \
+  --v7_2_lambda_b_reg 1e-3 --v7_2_lambda_alpha_reg 1e-3 \
+  --use_v7_2_1_cycle_canon --v7_2_1_lambda_cycle_canon 1e-3 \
+  --use_v7_3_timewarp --v7_3_lambda_fw 1e-1 --v7_3_lambda_bw 1e-1 \
+  --v7_3_timewarp_delta_fraction 0.25 \
+  > train_v7.3_set2_timewarp_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
 # V7.3 with temporal bidirectional warp for case2
 nohup python train.py -s /root/autodl-tmp/4dctgs/x2-gaussian-main/x2-gaussian-main-origin/data/dir_4d_case2.pickle \
   --coarse_iter 5000 --iterations 30000 \
@@ -454,6 +535,18 @@ nohup python train.py -s /root/autodl-tmp/4dctgs/x2-gaussian-main/x2-gaussian-ma
   --use_v7_3_timewarp --v7_3_lambda_fw 1e-3 --v7_3_lambda_bw 1e-3 \
   --v7_3_lambda_fw_bw 1e-4 --v7_3_timewarp_delta_fraction 0.1 \
   > train_v7.3_roundtrip_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s /root/autodl-tmp/4dctgs/x2-gaussian-main/x2-gaussian-main-origin/data/dir_4d_case2.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 7000 10000 20000 30000 \
+  --save_iterations 30000 --dirname dir_4d_case2_v7.3_timewarp_roundtrip \
+  --use_v7_bidirectional_displacement --lambda_cycle 0.1 \
+  --use_v7_2_consistency --v7_2_alpha_init 0.3 --v7_2_alpha_learnable \
+  --v7_2_lambda_b_reg 1e-3 --v7_2_lambda_alpha_reg 1e-3 \
+  --use_v7_2_1_cycle_canon --v7_2_1_lambda_cycle_canon 1e-3 \
+  --use_v7_3_timewarp --v7_3_lambda_fw 1e-3 --v7_3_lambda_bw 1e-3 \
+  --v7_3_lambda_fw_bw 1e-4 --v7_3_timewarp_delta_fraction 0.1 \
+  > train_v7.3_roundtrip_case2_$(date +%Y%m%d_%H%M%S).log 2>&1 &
 
 #############################################################################
 # V7.3.1 SIGMA/RHO TEMPORAL REGULARIZATION (extension of V7.3)
@@ -617,6 +710,72 @@ nohup python train.py -s /root/autodl-tmp/4dctgs/x2-gaussian-main/x2-gaussian-ma
   --use_v7_4_canonical_decode --v7_4_lambda_cycle_canon_sigma 1e-4 --v7_4_lambda_prior_sigma 1e-4 \
   --use_v7_5_full_timewarp --v7_5_lambda_fw_sigma 1e-5 --v7_5_lambda_fw_rho 1e-5 \
   > train_v7.5_full_timewarp_case2_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+#############################################################################
+# V7.5.1 FULL-STATE BIDIRECTIONAL TIME-WARP CONSISTENCY (extension of V7.5)
+#############################################################################
+# V7.5.1 extends V7.5 by enabling bidirectional time-warp consistency for full state:
+#
+# Key idea: Both forward and backward warp should be active for all state components.
+#
+# When use_v7_5_1_roundtrip_full_state=True:
+#   - Center: Uses L_fw + L_bw (both active)
+#   - Σ/ρ: Uses L_fw + L_bw (both active)
+#
+# Backward warp for Σ/ρ:
+#   L_bw_Sigma = |s_bw(t1|t2) - s(t1)|, canonical(t2) warped to t1
+#   L_bw_rho = |ρ_bw(t1|t2) - ρ(t1)|, canonical(t2) warped to t1
+#
+# Default weights when V7.5.1 is enabled:
+#   - v7_5_lambda_bw_sigma = 1e-5 (shape backward)
+#   - v7_5_lambda_bw_rho = 1e-5 (density backward)
+
+# V7.5.1 with full-state bidirectional for case1
+nohup python train.py -s /root/autodl-tmp/4dctgs/x2-gaussian-main/x2-gaussian-main-origin/data/dir_4d_case1.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 7000 10000 20000 30000 \
+  --save_iterations 30000 --save_checkpoint --dirname dir_4d_case1_v7.5.1_bidirectional \
+  --use_v7_bidirectional_displacement --lambda_cycle 0.1 \
+  --use_v7_2_consistency --v7_2_alpha_init 0.3 --v7_2_alpha_learnable \
+  --v7_2_lambda_b_reg 1e-3 --v7_2_lambda_alpha_reg 1e-3 \
+  --use_v7_2_1_cycle_canon --v7_2_1_lambda_cycle_canon 1e-3 \
+  --use_v7_3_timewarp --v7_3_lambda_fw 1e-3 --v7_3_lambda_bw 1e-3 \
+  --use_v7_3_1_sigma_rho --v7_3_1_lambda_tv_sigma 1e-4 --v7_3_1_lambda_cycle_sigma 1e-4 \
+  --use_v7_4_canonical_decode --v7_4_lambda_cycle_canon_sigma 1e-4 --v7_4_lambda_prior_sigma 1e-4 \
+  --use_v7_5_full_timewarp --v7_5_lambda_fw_sigma 1e-5 --v7_5_lambda_fw_rho 1e-5 \
+  --use_v7_5_1_roundtrip_full_state \
+  > train_v7.5.1_bidirectional_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s /root/autodl-tmp/4dctgs/x2-gaussian-main/x2-gaussian-main-origin/data/dir_4d_case1.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 7000 10000 20000 30000 \
+  --save_iterations 30000 --save_checkpoint --dirname dir_4d_case1_v7.5.1_bidirectional \
+  --use_v7_bidirectional_displacement --lambda_cycle 0.1 \
+  --use_v7_2_consistency --v7_2_alpha_init 0.3 --v7_2_alpha_learnable \
+  --v7_2_lambda_b_reg 1e-3 --v7_2_lambda_alpha_reg 1e-3 \
+  --use_v7_2_1_cycle_canon --v7_2_1_lambda_cycle_canon 1e-3 \
+  --use_v7_3_timewarp --v7_3_lambda_fw 1e-3 --v7_3_lambda_bw 1e-3 \
+  --use_v7_3_1_sigma_rho --v7_3_1_lambda_tv_sigma 1e-4 --v7_3_1_lambda_cycle_sigma 1e-4 \
+  --use_v7_4_canonical_decode --v7_4_lambda_cycle_canon_sigma 1e-4 --v7_4_lambda_prior_sigma 1e-4 \
+  --use_v7_5_full_timewarp --v7_5_lambda_fw_sigma 1e-5 --v7_5_lambda_fw_rho 1e-5 \
+  --use_v7_5_1_roundtrip_full_state \
+  > train_v7.5.1_bidirectional_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# V7.5.1 with full-state bidirectional for case2
+nohup python train.py -s /root/autodl-tmp/4dctgs/x2-gaussian-main/x2-gaussian-main-origin/data/dir_4d_case2.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 7000 10000 20000 30000 \
+  --save_iterations 30000 --save_checkpoint --dirname dir_4d_case2_v7.5.1_bidirectional \
+  --use_v7_bidirectional_displacement --lambda_cycle 0.1 \
+  --use_v7_2_consistency --v7_2_alpha_init 0.3 --v7_2_alpha_learnable \
+  --v7_2_lambda_b_reg 1e-3 --v7_2_lambda_alpha_reg 1e-3 \
+  --use_v7_2_1_cycle_canon --v7_2_1_lambda_cycle_canon 1e-3 \
+  --use_v7_3_timewarp --v7_3_lambda_fw 1e-3 --v7_3_lambda_bw 1e-3 \
+  --use_v7_3_1_sigma_rho --v7_3_1_lambda_tv_sigma 1e-4 --v7_3_1_lambda_cycle_sigma 1e-4 \
+  --use_v7_4_canonical_decode --v7_4_lambda_cycle_canon_sigma 1e-4 --v7_4_lambda_prior_sigma 1e-4 \
+  --use_v7_5_full_timewarp --v7_5_lambda_fw_sigma 1e-5 --v7_5_lambda_fw_rho 1e-5 \
+  --use_v7_5_1_roundtrip_full_state \
+  > train_v7.5.1_bidirectional_case2_$(date +%Y%m%d_%H%M%S).log 2>&1 &
 
 #############################################################################
 # V8 PHASE-ALIGNED MODEL (experimental extension of v7)

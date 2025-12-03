@@ -82,8 +82,20 @@ def apply_v7_preset(opt, hyper):
     use_v7_4 = getattr(opt, 'use_v7_4_canonical_decode', False) and use_v7_2
     # Check if V7.5 full time-warp is enabled
     use_v7_5 = getattr(opt, 'use_v7_5_full_timewarp', False) and use_v7_2 and use_v7_4
+    # Check if V7.5.1 full-state bidirectional is enabled
+    use_v7_5_1 = getattr(opt, 'use_v7_5_1_roundtrip_full_state', False) and use_v7_5
+    # Check if V7.6 period-free mode is enabled
+    use_v7_6 = getattr(opt, 'use_v7_6_no_period', False) and use_v7_5_1
+    # Check if V7.7 freeze-period-only mode is enabled
+    use_v7_7 = getattr(opt, 'use_v7_7_freeze_period_only', False) and use_v7_5_1
     
-    if use_v7_5:
+    if use_v7_7:
+        version_str = "V7.7 FREEZE-PERIOD BIDIRECTIONAL TIME-WARP"
+    elif use_v7_6:
+        version_str = "V7.6 PERIOD-FREE BIDIRECTIONAL TIME-WARP"
+    elif use_v7_5_1:
+        version_str = "V7.5.1 FULL-STATE BIDIRECTIONAL TIME-WARP"
+    elif use_v7_5:
         version_str = "V7.5 FULL TIME-WARP SIGMA/RHO"
     elif use_v7_4:
         version_str = "V7.4 CANONICAL DECODE SIGMA/RHO"
@@ -158,13 +170,40 @@ def apply_v7_preset(opt, hyper):
                 print(f"  - L_bw_Sigma (backward warp shape): ENABLED (V7.5, λ={lambda_bw_sigma})")
             if lambda_bw_rho > 0:
                 print(f"  - L_bw_rho (backward warp density): ENABLED (V7.5, λ={lambda_bw_rho})")
+            if lambda_bw_sigma > 0 or lambda_bw_rho > 0 or use_v7_5_1:
+                # V7.5.1 enables backward warp with default weights
+                bw_sigma_eff = lambda_bw_sigma if lambda_bw_sigma > 0 else 1e-5
+                bw_rho_eff = lambda_bw_rho if lambda_bw_rho > 0 else 1e-5
+                print(f"  - L_bw_Sigma/rho (backward): ENABLED (V7.5.1, λ_σ={bw_sigma_eff}, λ_ρ={bw_rho_eff})")
             if lambda_rt_sigma > 0 or lambda_rt_rho > 0:
-                print(f"  - L_rt_Sigma/rho (round-trip): ENABLED (V7.5, λ_σ={lambda_rt_sigma}, λ_ρ={lambda_rt_rho})")
+                print(f"  - L_rt_Sigma/rho (round-trip): ENABLED (λ_σ={lambda_rt_sigma}, λ_ρ={lambda_rt_rho})")
             print(f"  - Forward timewarp decoders: ENABLED (V7.5)")
             print(f"  - Timewarp Δ fraction: {delta_frac_v7_5}")
+        # V7.5.1: Full-state bidirectional consistency
+        if use_v7_5_1:
+            print(f"  - V7.5.1: Full-state bidirectional enabled for centers + Σ/ρ")
+            print(f"  - Center: L_fw + L_bw (both active)")
+            print(f"  - Σ/ρ: L_fw + L_bw (both active)")
+        # V7.7: Freeze period only (keep all losses)
+        if use_v7_7:
+            print(f"  - V7.7: Freeze-period mode enabled")
+            print(f"  - ALL V7.5.1 losses: KEPT (including periodicity losses)")
+            print(f"  - period learning: FROZEN (uses init value exp(log(2.8))≈2.8)")
+        # V7.6: Period-free mode
+        if use_v7_6:
+            print(f"  - V7.6: Period-free mode enabled")
+            print(f"  - L_pc (image periodic consistency): DISABLED")
+            print(f"  - L_cycle (motion periodicity): DISABLED")
+            print(f"  - L_cycle_canon (V7.2.1): DISABLED")
+            print(f"  - L_cycle_sigma/rho (V7.3.1): DISABLED")
+            print(f"  - L_cycle_canon_Sigma/rho (V7.4): DISABLED")
+            print(f"  - period learning: FROZEN")
     else:
         print("  - L_inv (inverse consistency): ENABLED")
-    print("  - L_cycle (motion periodicity): ENABLED")
+    if use_v7_6:
+        print("  - L_cycle (motion periodicity): DISABLED (V7.6)")
+    else:
+        print("  - L_cycle (motion periodicity): ENABLED")
     if use_low_rank:
         num_modes = getattr(hyper, 'num_motion_modes', 3)
         print(f"  - Low-rank motion modes U[K, M, 3]: ENABLED (v9, M={num_modes})")
@@ -197,12 +236,18 @@ def apply_v7_preset(opt, hyper):
         else:
             print(f"  -> Using user-specified lambda_inv = {opt.lambda_inv}")
     
-    opt.use_cycle_motion = True
-    if opt.lambda_cycle <= 0:
-        opt.lambda_cycle = 0.01  # Default value from best experiments
-        print(f"  -> Setting lambda_cycle to {opt.lambda_cycle} (default)")
+    # V7.6: Disable L_cycle (motion periodicity)
+    if use_v7_6:
+        opt.use_cycle_motion = False
+        opt.lambda_cycle = 0.0
+        print(f"  -> V7.6: lambda_cycle = 0 (L_cycle disabled)")
     else:
-        print(f"  -> Using user-specified lambda_cycle = {opt.lambda_cycle}")
+        opt.use_cycle_motion = True
+        if opt.lambda_cycle <= 0:
+            opt.lambda_cycle = 0.01  # Default value from best experiments
+            print(f"  -> Setting lambda_cycle to {opt.lambda_cycle} (default)")
+        else:
+            print(f"  -> Using user-specified lambda_cycle = {opt.lambda_cycle}")
     
     # Force-disable v2 (symmetry regularization)
     if opt.use_symmetry_reg:
@@ -252,6 +297,8 @@ def training(
     checkpoint_iterations,
     checkpoint,
     coarse_iter,
+    load_model_path=None,
+    start_iteration=None,
 ):
     # Apply v7 preset if enabled (must be done before setting up GaussianModel)
     apply_v7_preset(opt, hyper)
@@ -313,34 +360,63 @@ def training(
                            custom_densities=densities)
         init_method_used = "s4_2"
     
-    # Standard initialization (if no special init method used)
-    if init_method_used == "standard":
+    # Continue training from saved model (if load_model_path is provided)
+    if load_model_path is not None and os.path.exists(load_model_path):
+        print("=" * 60)
+        print("CONTINUE TRAINING FROM SAVED MODEL")
+        print("=" * 60)
+        print(f"  Loading from: {load_model_path}")
+        if start_iteration is None:
+            raise ValueError("--start_iteration is required when using --load_model_path")
+        print(f"  Starting from iteration: {start_iteration}")
+        
+        # Load model from saved path
+        gaussians.load_from_model_path(load_model_path, opt)
+        init_method_used = "continue"
+        
+        # V7.4: Load base canonical params if they exist
+        # (saved during original training after coarse stage)
+        use_v7_4 = getattr(opt, 'use_v7_4_canonical_decode', False)
+        if use_v7_4:
+            # Re-save base params from current state (they should be similar)
+            gaussians.save_base_canonical_params()
+        
+        print("=" * 60)
+    elif init_method_used == "standard":
+        # Standard initialization (if no special init method used)
         initialize_gaussian(gaussians, dataset, None)
     
     scene.gaussians = gaussians
 
-    scene_reconstruction(
-        dataset,
-        opt,
-        pipe,
-        hyper,
-        tb_writer,
-        testing_iterations,
-        saving_iterations,
-        checkpoint_iterations,
-        checkpoint,
-        coarse_iter,
-        gaussians,
-        scene,
-        'coarse',
-    )
+    # Skip coarse stage if continuing from a later iteration
+    skip_coarse = (load_model_path is not None and start_iteration is not None and start_iteration >= coarse_iter)
+    
+    if not skip_coarse:
+        scene_reconstruction(
+            dataset,
+            opt,
+            pipe,
+            hyper,
+            tb_writer,
+            testing_iterations,
+            saving_iterations,
+            checkpoint_iterations,
+            checkpoint,
+            coarse_iter,
+            gaussians,
+            scene,
+            'coarse',
+        )
 
-    # V7.4: Save base canonical parameters after warm-up (coarse stage)
-    # These serve as the "anchor" for canonical decode losses
-    use_v7_4 = getattr(opt, 'use_v7_4_canonical_decode', False)
-    if use_v7_4:
-        gaussians.save_base_canonical_params()
+        # V7.4: Save base canonical parameters after warm-up (coarse stage)
+        # These serve as the "anchor" for canonical decode losses
+        use_v7_4 = getattr(opt, 'use_v7_4_canonical_decode', False)
+        if use_v7_4:
+            gaussians.save_base_canonical_params()
+    else:
+        print(f"[Continue Training] Skipping coarse stage (start_iteration={start_iteration} >= coarse_iter={coarse_iter})")
 
+    # Fine stage - pass start_iteration for continue training
     scene_reconstruction(
         dataset,
         opt,
@@ -355,6 +431,7 @@ def training(
         gaussians,
         scene,
         'fine',
+        start_iteration if skip_coarse else None,  # Pass start_iteration only if skipping coarse
     )
 
 
@@ -372,6 +449,7 @@ def scene_reconstruction(
     gaussians,
     scene,
     stage,
+    continue_from_iteration=None,  # For continue training
 ):
     
     scanner_cfg = scene.scanner_cfg
@@ -477,6 +555,24 @@ def scene_reconstruction(
 
     gaussians.training_setup(opt)
     
+    # --no_period or V7.6: Freeze period learning and disable L_cycle
+    no_period = getattr(opt, 'no_period', False)
+    use_v7_6_no_period = getattr(opt, 'use_v7_6_no_period', False)
+    use_v7_7_freeze_period = getattr(opt, 'use_v7_7_freeze_period_only', False)
+    if no_period or use_v7_6_no_period:
+        gaussians.freeze_period = True
+        opt.use_cycle_motion = False
+        opt.lambda_cycle = 0.0
+        if no_period and not use_v7_6_no_period:
+            print(f"  -> --no_period: period learning FROZEN (lr=0)")
+            print(f"  -> --no_period: L_pc (image periodic consistency) DISABLED")
+            print(f"  -> --no_period: L_cycle (motion periodicity) DISABLED")
+    
+    # V7.7: Only freeze period, keep all losses
+    if use_v7_7_freeze_period:
+        gaussians.freeze_period = True
+        print(f"  -> V7.7: period learning FROZEN (lr=0), ALL losses KEPT")
+    
     # s1 方案A: Create separate optimizer for learnable weights
     # NOTE: We use a separate optimizer to avoid conflicts with Gaussian densification/pruning
     # The Gaussian optimizer prunes parameters based on Gaussian count, but α_j has fixed size [N_projections]
@@ -508,10 +604,12 @@ def scene_reconstruction(
         )
         print(f"  -> Created separate optimizer for voxel volume V with lr={opt.s3_voxel_lr}")
     
+    # Checkpoint loading: restore model state and iteration
+    checkpoint_first_iter = None
     if checkpoint is not None:
-        (model_params, first_iter) = torch.load(checkpoint)
+        (model_params, checkpoint_first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
-        print(f"Load checkpoint {osp.basename(checkpoint)}.")
+        print(f"Load checkpoint {osp.basename(checkpoint)} at iteration {checkpoint_first_iter}.")
 
     # Set up loss
     use_tv = opt.lambda_tv > 0
@@ -523,10 +621,23 @@ def scene_reconstruction(
 
     if stage == 'coarse':
         train_iterations = coarse_iter
-        first_iter = 0
+        # If checkpoint was loaded, resume from checkpoint iteration
+        if checkpoint_first_iter is not None:
+            first_iter = checkpoint_first_iter
+            print(f"Resuming coarse stage from iteration {first_iter}")
+        else:
+            first_iter = 0
     else:
         train_iterations = opt.iterations
-        first_iter = coarse_iter
+        # Priority: continue_from_iteration > checkpoint_first_iter > coarse_iter
+        if continue_from_iteration is not None:
+            first_iter = continue_from_iteration
+            print(f"[Continue Training] Resuming fine stage from iteration {first_iter}")
+        elif checkpoint_first_iter is not None:
+            first_iter = checkpoint_first_iter
+            print(f"Resuming fine stage from iteration {first_iter}")
+        else:
+            first_iter = coarse_iter
 
     # Train
     iter_start = torch.cuda.Event(enable_timing=True)
@@ -836,8 +947,12 @@ def scene_reconstruction(
             temporal_ensemble_static._last_L_vol = s4_L_vol
             temporal_ensemble_static._last_L_proj_avg = s4_L_proj_avg
 
-        # Prior loss
-        if stage=='fine' and iteration > 7000:
+        # Prior loss (L_pc in original paper)
+        # L_pc = L1(I(t), I(t ± T̂)) + λ*SSIM(I(t), I(t ± T̂))
+        # This enforces periodicity by comparing rendered images at t and t±period
+        # DISABLED when no_period=True or use_v7_6_no_period=True
+        no_period_mode = getattr(opt, 'no_period', False) or getattr(opt, 'use_v7_6_no_period', False)
+        if stage=='fine' and iteration > 7000 and not no_period_mode:
             render_pkg_prior = render_prior_oneT(viewpoint_cam, gaussians, pipe, stage)
             image_prior = render_pkg_prior["render"]    
             render_loss_prior = l1_loss(image_prior, gt_image)
@@ -1004,8 +1119,10 @@ def scene_reconstruction(
             
             # V7.2.1: L_cycle_canon - Canonical-space cycle consistency
             # Only enabled when use_v7_2_1_cycle_canon=True on top of V7.2
+            # V7.6: Disabled (uses period for periodicity)
             use_v7_2_1_cycle_canon = getattr(opt, 'use_v7_2_1_cycle_canon', False)
-            if use_v7_2_1_cycle_canon:
+            use_v7_6_no_period = getattr(opt, 'use_v7_6_no_period', False)
+            if use_v7_2_1_cycle_canon and not use_v7_6_no_period:
                 v7_2_1_lambda_cycle_canon = getattr(opt, 'v7_2_1_lambda_cycle_canon', 1e-3)
                 if v7_2_1_lambda_cycle_canon > 0:
                     loss_cycle_canon = gaussians.compute_cycle_canon_loss(time, sample_ratio=1.0)
@@ -1038,7 +1155,7 @@ def scene_reconstruction(
                     loss["v7_3_L_bw"] = timewarp_losses["L_bw"]
                     loss["total"] = loss["total"] + v7_3_lambda_bw * timewarp_losses["L_bw"]
                 
-                # L_fw_bw: optional round-trip closure
+                # L_fw_bw: optional round-trip closure for centers
                 if v7_3_lambda_fw_bw > 0 and "L_fw_bw" in timewarp_losses:
                     loss["v7_3_L_fw_bw"] = timewarp_losses["L_fw_bw"]
                     loss["total"] = loss["total"] + v7_3_lambda_fw_bw * timewarp_losses["L_fw_bw"]
@@ -1062,7 +1179,8 @@ def scene_reconstruction(
                     loss["total"] = loss["total"] + v7_3_1_lambda_tv_sigma * sigma_rho_losses["L_tv_sigma"]
                 
                 # L_cycle_sigma: periodic consistency for scale
-                if v7_3_1_lambda_cycle_sigma > 0:
+                # V7.6: Disabled (uses period for periodicity)
+                if v7_3_1_lambda_cycle_sigma > 0 and not use_v7_6_no_period:
                     loss["v7_3_1_L_cycle_sigma"] = sigma_rho_losses["L_cycle_sigma"]
                     loss["total"] = loss["total"] + v7_3_1_lambda_cycle_sigma * sigma_rho_losses["L_cycle_sigma"]
                 
@@ -1072,7 +1190,8 @@ def scene_reconstruction(
                     loss["total"] = loss["total"] + v7_3_1_lambda_tv_rho * sigma_rho_losses["L_tv_rho"]
                 
                 # L_cycle_rho: periodic consistency for density (only if density is dynamic)
-                if v7_3_1_lambda_cycle_rho > 0:
+                # V7.6: Disabled (uses period for periodicity)
+                if v7_3_1_lambda_cycle_rho > 0 and not use_v7_6_no_period:
                     loss["v7_3_1_L_cycle_rho"] = sigma_rho_losses["L_cycle_rho"]
                     loss["total"] = loss["total"] + v7_3_1_lambda_cycle_rho * sigma_rho_losses["L_cycle_rho"]
             
@@ -1090,12 +1209,14 @@ def scene_reconstruction(
                 v7_4_lambda_prior_rho = getattr(opt, 'v7_4_lambda_prior_rho', 1e-4)
                 
                 # L_cycle_canon_Sigma: canonical shape periodic consistency
-                if v7_4_lambda_cycle_sigma > 0:
+                # V7.6: Disabled (uses period for periodicity)
+                if v7_4_lambda_cycle_sigma > 0 and not use_v7_6_no_period:
                     loss["v7_4_L_cycle_canon_Sigma"] = canon_losses["L_cycle_canon_Sigma"]
                     loss["total"] = loss["total"] + v7_4_lambda_cycle_sigma * canon_losses["L_cycle_canon_Sigma"]
                 
                 # L_cycle_canon_rho: canonical density periodic consistency
-                if v7_4_lambda_cycle_rho > 0:
+                # V7.6: Disabled (uses period for periodicity)
+                if v7_4_lambda_cycle_rho > 0 and not use_v7_6_no_period:
                     loss["v7_4_L_cycle_canon_rho"] = canon_losses["L_cycle_canon_rho"]
                     loss["total"] = loss["total"] + v7_4_lambda_cycle_rho * canon_losses["L_cycle_canon_rho"]
                 
@@ -1134,22 +1255,32 @@ def scene_reconstruction(
                     loss["v7_5_L_fw_rho"] = timewarp_losses["L_fw_rho"]
                     loss["total"] = loss["total"] + v7_5_lambda_fw_rho * timewarp_losses["L_fw_rho"]
                 
-                # L_bw_Sigma: backward warp shape consistency (optional)
-                if v7_5_lambda_bw_sigma > 0:
+                # L_bw_Sigma: backward warp shape consistency
+                # V7.5.1: Use default weights when full-state bidirectional is enabled
+                use_v7_5_1_bidirectional = getattr(opt, 'use_v7_5_1_roundtrip_full_state', False)
+                v7_5_lambda_bw_sigma_eff = v7_5_lambda_bw_sigma
+                v7_5_lambda_bw_rho_eff = v7_5_lambda_bw_rho
+                if use_v7_5_1_bidirectional:
+                    if v7_5_lambda_bw_sigma == 0:
+                        v7_5_lambda_bw_sigma_eff = 1e-5  # Default weight for V7.5.1
+                    if v7_5_lambda_bw_rho == 0:
+                        v7_5_lambda_bw_rho_eff = 1e-5  # Default weight for V7.5.1
+                
+                if v7_5_lambda_bw_sigma_eff > 0:
                     loss["v7_5_L_bw_Sigma"] = timewarp_losses["L_bw_Sigma"]
-                    loss["total"] = loss["total"] + v7_5_lambda_bw_sigma * timewarp_losses["L_bw_Sigma"]
+                    loss["total"] = loss["total"] + v7_5_lambda_bw_sigma_eff * timewarp_losses["L_bw_Sigma"]
                 
-                # L_bw_rho: backward warp density consistency (optional)
-                if v7_5_lambda_bw_rho > 0:
+                # L_bw_rho: backward warp density consistency
+                if v7_5_lambda_bw_rho_eff > 0:
                     loss["v7_5_L_bw_rho"] = timewarp_losses["L_bw_rho"]
-                    loss["total"] = loss["total"] + v7_5_lambda_bw_rho * timewarp_losses["L_bw_rho"]
+                    loss["total"] = loss["total"] + v7_5_lambda_bw_rho_eff * timewarp_losses["L_bw_rho"]
                 
-                # L_rt_Sigma: round-trip shape consistency (optional, placeholder)
+                # L_rt_Sigma: round-trip shape consistency (optional, not used in V7.5.1)
                 if v7_5_lambda_rt_sigma > 0:
                     loss["v7_5_L_rt_Sigma"] = timewarp_losses["L_rt_Sigma"]
                     loss["total"] = loss["total"] + v7_5_lambda_rt_sigma * timewarp_losses["L_rt_Sigma"]
                 
-                # L_rt_rho: round-trip density consistency (optional, placeholder)
+                # L_rt_rho: round-trip density consistency (optional, not used in V7.5.1)
                 if v7_5_lambda_rt_rho > 0:
                     loss["v7_5_L_rt_rho"] = timewarp_losses["L_rt_rho"]
                     loss["total"] = loss["total"] + v7_5_lambda_rt_rho * timewarp_losses["L_rt_rho"]
@@ -1492,7 +1623,14 @@ if __name__ == "__main__":
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
-    parser.add_argument("--start_checkpoint", type=str, default=None)
+    parser.add_argument("--save_checkpoint", action="store_true",
+                        help="Automatically save checkpoint at same iterations as save_iterations (syncs checkpoint_iterations with save_iterations)")
+    parser.add_argument("--start_checkpoint", type=str, default=None,
+                        help="Path to checkpoint file (.pth) to resume training. Contains model weights + optimizer state + iteration.")
+    parser.add_argument("--load_model_path", type=str, default=None, 
+                        help="Path to saved model directory (e.g., output/xxx/point_cloud/iteration_30000). Only loads model weights, not optimizer state.")
+    parser.add_argument("--start_iteration", type=int, default=None,
+                        help="Iteration to start from when using --load_model_path (required if --load_model_path is used)")
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--coarse_iter", type=int, default=5000)
     parser.add_argument("--dirname", type=str, default="DEBUG")
@@ -1500,6 +1638,11 @@ if __name__ == "__main__":
     args.save_iterations.append(args.iterations)
     args.test_iterations.append(args.iterations)
     args.test_iterations.append(1)
+    
+    # --save_checkpoint: sync checkpoint_iterations with save_iterations
+    if args.save_checkpoint:
+        args.checkpoint_iterations = list(set(args.checkpoint_iterations + args.save_iterations))
+        print(f"[save_checkpoint] Will save checkpoints at iterations: {sorted(args.checkpoint_iterations)}")
     # fmt: on
 
     dirname = args.dirname
@@ -1532,6 +1675,8 @@ if __name__ == "__main__":
         args.checkpoint_iterations,
         args.start_checkpoint,
         args.coarse_iter,
+        args.load_model_path,
+        args.start_iteration,
     )
 
     # All done

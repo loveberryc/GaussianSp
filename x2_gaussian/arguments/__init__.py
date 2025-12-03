@@ -111,6 +111,7 @@ class OptimizationParams(ParamGroup):
         # Cycle motion consistency parameters (motion periodicity constraint)
         self.use_cycle_motion = False  # Enable cycle motion loss L_cycle_motion
         self.lambda_cycle = 0.1  # Weight for cycle motion loss: ||D_f(mu, t+T) - D_f(mu, t)||_1
+        self.no_period = False  # Disable period learning and L_cycle (for non-periodic motion)
         
         # Jacobian regularization parameters (local folding prevention)
         self.use_jacobian_reg = False  # Enable Jacobian regularization L_jac
@@ -443,6 +444,54 @@ class OptimizationParams(ParamGroup):
         self.v7_5_lambda_rt_sigma = 0.0  # Weight for round-trip shape loss (optional)
         self.v7_5_lambda_rt_rho = 0.0  # Weight for round-trip density loss (optional)
         self.v7_5_timewarp_delta_fraction = 0.25  # Δt = fraction * T̂ for time-warp
+        
+        # V7.5.1: Full-State Bidirectional Time-Warp Consistency
+        # =====================================================================
+        # V7.5.1 extends the bidirectional time-warp consistency to the full
+        # Gaussian state (center, covariance, density).
+        #
+        # Key changes from V7.5:
+        #   - Center: Ensures forward + backward losses are both active
+        #   - Σ/ρ: Enables backward warp in addition to forward warp
+        #
+        # When use_v7_5_1_roundtrip_full_state=True:
+        #   - Center uses L_fw + L_bw from V7.3 (both active)
+        #   - Σ/ρ uses L_fw + L_bw (both active)
+        #
+        # Backward for Σ/ρ:
+        #   L_bw_Sigma = |s_bw(t1|t2) - s(t1)|, canonical(t2) warped to t1
+        #   L_bw_rho = |ρ_bw(t1|t2) - ρ(t1)|, canonical(t2) warped to t1
+        self.use_v7_5_1_roundtrip_full_state = False  # Enable full-state bidirectional consistency
+        
+        # V7.6: Period-Free Mode (extension of V7.5.1)
+        # =====================================================================
+        # V7.6 disables all losses that enforce periodicity using the learned period T̂.
+        # This is useful when the motion is NOT strictly periodic (e.g., irregular breathing).
+        #
+        # When use_v7_6_no_period=True:
+        #   - L_cycle (motion periodicity): DISABLED
+        #   - L_cycle_canon (V7.2.1 canonical cycle): DISABLED  
+        #   - L_cycle_sigma/rho (V7.3.1 periodic σ/ρ): DISABLED
+        #   - L_cycle_canon_Sigma/rho (V7.4 canonical cycle): DISABLED
+        #   - period learning: DISABLED (period parameter frozen)
+        #
+        # Losses that are KEPT (they use T̂ only for time sampling, not periodicity):
+        #   - L_fw, L_bw (V7.3 time-warp for centers)
+        #   - L_fw_Sigma/rho, L_bw_Sigma/rho (V7.5 time-warp for σ/ρ)
+        #   - L_tv_sigma/rho (V7.3.1 temporal smoothness)
+        #   - All other losses
+        self.use_v7_6_no_period = False  # Enable period-free mode
+        
+        # V7.7: Freeze Period Only (extension of V7.5.1)
+        # =====================================================================
+        # V7.7 keeps ALL losses from V7.5.1 (including periodicity losses),
+        # but freezes the period parameter learning (lr=0).
+        # This tests whether a fixed period (init=2.8) works as well as learned.
+        #
+        # Difference from V7.6:
+        #   - V7.6: Disables periodicity losses + freezes period
+        #   - V7.7: Keeps periodicity losses + freezes period (uses init period=2.8)
+        self.use_v7_7_freeze_period_only = False  # Freeze period but keep all losses
         
         # s5: 4D Dynamic-Aware Multi-Phase FDK Point Cloud Initialization
         # =====================================================================
