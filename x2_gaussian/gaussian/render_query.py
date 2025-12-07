@@ -63,8 +63,9 @@ def query(
     )
     voxelizer = GaussianVoxelizer(voxel_settings=voxel_settings)
 
-    means3D = pc.get_xyz
-    density = pc.get_density
+    # Clone tensors to avoid in-place modification issues from optimizer updates
+    means3D = pc.get_xyz.clone()
+    density = pc.get_density.clone()
 
     time = torch.tensor(time).to(means3D.device).repeat(means3D.shape[0],1)
 
@@ -76,19 +77,31 @@ def query(
     else:
         # scales = pc.get_scaling
         # rotations = pc.get_rotation
-        scales = pc._scaling
-        rotations = pc._rotation
+        scales = pc._scaling.clone()
+        rotations = pc._rotation.clone()
 
     if stage=='coarse':
         means3D_final, scales_final, rotations_final = means3D, scales, rotations
     else:
-        # Use V7.1 correction if enabled, otherwise use standard V7 deformation
-        if use_v7_1_correction and correction_alpha != 0.0:
-            means3D_final, scales_final, rotations_final = pc.get_deformed_centers(
-                time, use_v7_1_correction=True, correction_alpha=correction_alpha
-            )
+        # Use get_deformed_centers for all deformation (including PhysX-Gaussian anchor deformation)
+        # For PhysX-Boosted: use no_grad to avoid graph conflict with main render pass
+        # L_tv regularization doesn't need gradients through deformation network
+        use_boosted = getattr(pc, 'use_boosted', False) if hasattr(pc, 'use_boosted') else False
+        if use_boosted and pc.use_anchor_deformation:
+            with torch.no_grad():
+                means3D_final, scales_final, rotations_final = pc.get_deformed_centers(
+                    time, 
+                    use_v7_1_correction=use_v7_1_correction, 
+                    correction_alpha=correction_alpha,
+                    is_training=False
+                )
         else:
-            means3D_final, scales_final, rotations_final = pc._deformation(means3D, scales, rotations, density, time)
+            means3D_final, scales_final, rotations_final = pc.get_deformed_centers(
+                time, 
+                use_v7_1_correction=use_v7_1_correction, 
+                correction_alpha=correction_alpha,
+                is_training=False  # Query is typically for evaluation
+            )
     scales_final = pc.scaling_activation(scales_final)
     rotations_final = pc.rotation_activation(rotations_final)
 
@@ -114,9 +127,14 @@ def render(
     scaling_modifier=1.0,
     use_v7_1_correction=False,
     correction_alpha=0.0,
+    iteration_ratio=0.0,
 ):
     """
     Render an X-ray projection with rasterization.
+    
+    Args:
+        iteration_ratio: Current iteration / total iterations (0.0 to 1.0)
+                        Used for PhysX-Gaussian mask decay scheduler
     """
 
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
@@ -158,9 +176,10 @@ def render(
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
-    means3D = pc.get_xyz
+    # Clone tensors to avoid in-place modification issues from optimizer updates
+    means3D = pc.get_xyz.clone()
     means2D = screenspace_points
-    density = pc.get_density
+    density = pc.get_density.clone()
 
     time = torch.tensor(viewpoint_camera.time).to(means3D.device).repeat(means3D.shape[0],1)
 
@@ -174,8 +193,8 @@ def render(
     else:
         # scales = pc.get_scaling
         # rotations = pc.get_rotation
-        scales = pc._scaling
-        rotations = pc._rotation
+        scales = pc._scaling.clone()
+        rotations = pc._rotation.clone()
 
     # neg_inf_mask = torch.isinf(scales)
     # if neg_inf_mask.sum() > 0:
@@ -184,13 +203,16 @@ def render(
     if stage=='coarse':
         means3D_final, scales_final, rotations_final = means3D, scales, rotations
     else:
-        # Use V7.1 correction if enabled, otherwise use standard V7 deformation
-        if use_v7_1_correction and correction_alpha != 0.0:
-            means3D_final, scales_final, rotations_final = pc.get_deformed_centers(
-                time, use_v7_1_correction=True, correction_alpha=correction_alpha
-            )
-        else:
-            means3D_final, scales_final, rotations_final = pc._deformation(means3D, scales, rotations, density, time)
+        # Use get_deformed_centers for all deformation (including PhysX-Gaussian anchor deformation)
+        # is_training=True during training enables masking for physics completion loss
+        # iteration_ratio is used for PhysX-Gaussian mask decay scheduler
+        means3D_final, scales_final, rotations_final = pc.get_deformed_centers(
+            time, 
+            use_v7_1_correction=use_v7_1_correction, 
+            correction_alpha=correction_alpha,
+            is_training=True,  # Render is called during training
+            iteration_ratio=iteration_ratio
+        )
     scales_final = pc.scaling_activation(scales_final)
     rotations_final = pc.rotation_activation(rotations_final)
 
@@ -262,9 +284,10 @@ def render_prior_oneT(
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
-    means3D = pc.get_xyz
+    # Clone tensors to avoid in-place modification issues from optimizer updates
+    means3D = pc.get_xyz.clone()
     means2D = screenspace_points
-    density = pc.get_density
+    density = pc.get_density.clone()
 
     time = torch.tensor(viewpoint_camera.time).to(means3D.device).repeat(means3D.shape[0],1)
 
@@ -298,8 +321,8 @@ def render_prior_oneT(
     else:
         # scales = pc.get_scaling
         # rotations = pc.get_rotation
-        scales = pc._scaling
-        rotations = pc._rotation
+        scales = pc._scaling.clone()
+        rotations = pc._rotation.clone()
 
     # neg_inf_mask = torch.isinf(scales)
     # if neg_inf_mask.sum() > 0:
@@ -308,12 +331,23 @@ def render_prior_oneT(
     if stage=='coarse':
         means3D_final, scales_final, rotations_final = means3D, scales, rotations
     else:
-        # breakpoint()
-        means3D_final, scales_final, rotations_final = pc._deformation(means3D, scales, rotations, density, time)
+        # Use get_deformed_centers for all deformation (including PhysX-Gaussian anchor deformation)
+        # For PhysX-Boosted: use no_grad to avoid graph conflict with main render pass
+        # The period gradient flows through new_time calculation above, not through deformation network
+        use_boosted = getattr(pc, 'use_boosted', False) if hasattr(pc, 'use_boosted') else False
+        if use_boosted and pc.use_anchor_deformation:
+            with torch.no_grad():
+                means3D_final, scales_final, rotations_final = pc.get_deformed_centers(
+                    time.detach(), is_training=False  # Detach time to break gradient to deformation
+                )
+            # Re-enable gradient for the rendered image to allow L_pc gradient flow
+            means3D_final = means3D_final.detach().requires_grad_(True)
+        else:
+            means3D_final, scales_final, rotations_final = pc.get_deformed_centers(
+                time, is_training=False  # Prior rendering doesn't need masking
+            )
     scales_final = pc.scaling_activation(scales_final)
     rotations_final = pc.rotation_activation(rotations_final)
-
-    # breakpoint()
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen).
     rendered_image, radii = rasterizer(

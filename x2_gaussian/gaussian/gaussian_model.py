@@ -34,6 +34,7 @@ from x2_gaussian.utils.gaussian_utils import (
 )
 from x2_gaussian.gaussian.deformation import deform_network
 from x2_gaussian.gaussian.regulation import compute_plane_smoothness
+from x2_gaussian.gaussian.anchor_module import AnchorDeformationNet
 
 EPS = 1e-5
 
@@ -189,6 +190,21 @@ class GaussianModel:
         self.use_adaptive_gating = getattr(args, 'use_adaptive_gating', False)
         self._motion_modes = torch.empty(0)  # U: [K, M, 3] per-Gaussian motion modes
         
+        # PhysX-Gaussian: Anchor-based Spacetime Transformer parameters
+        self.use_anchor_deformation = getattr(args, 'use_anchor_deformation', False)
+        self.use_boosted = getattr(args, 'use_boosted', False)  # PhysX-Boosted: full HexPlane + Anchor
+        self.num_anchors = getattr(args, 'num_anchors', 1024)
+        self.anchor_k = getattr(args, 'anchor_k', 10)
+        self.mask_ratio = getattr(args, 'mask_ratio', 0.25)
+        self._deformation_anchor = None  # Will be initialized if use_anchor_deformation is True
+        
+        # Create anchor deformation network if enabled
+        if self.use_anchor_deformation:
+            self._deformation_anchor = AnchorDeformationNet(args)
+            print(f"[PhysX-Gaussian] Anchor-based deformation ENABLED")
+            print(f"  - Replacing HexPlane+MLP with Spacetime Transformer")
+            print(f"  - num_anchors={self.num_anchors}, anchor_k={self.anchor_k}, mask_ratio={self.mask_ratio}")
+        
         # V7.1: Alpha parameters for consistency-aware rendering
         self.use_trainable_alpha = getattr(args, 'use_trainable_alpha', False)
         self.trainable_alpha_init = getattr(args, 'trainable_alpha_init', 0.0)
@@ -304,6 +320,11 @@ class GaussianModel:
         self.setup_functions()
 
     def capture(self):
+        # PhysX-Gaussian: Also save anchor deformation network state
+        anchor_state = None
+        if self.use_anchor_deformation and self._deformation_anchor is not None:
+            anchor_state = self._deformation_anchor.state_dict()
+        
         return (
             self._xyz,
             self._scaling,
@@ -319,11 +340,18 @@ class GaussianModel:
             self._deformation_table,
             self.period,
             self._motion_modes,  # v9: add motion modes to checkpoint
+            anchor_state,  # PhysX-Gaussian: anchor network state (V5 balance_logit etc.)
         )
 
     def restore(self, model_args, training_args):
-        # Handle both old checkpoints (13 items) and new checkpoints (14 items with motion_modes)
-        if len(model_args) == 14:
+        # Handle checkpoints with different number of items:
+        # - 13 items: Legacy without motion_modes
+        # - 14 items: With motion_modes but without anchor_state
+        # - 15 items: With both motion_modes and anchor_state (PhysX-Gaussian)
+        anchor_state = None
+        
+        if len(model_args) == 15:
+            # New checkpoint with anchor_state (PhysX-Gaussian)
             (
                 self._xyz,
                 self._scaling,
@@ -338,10 +366,29 @@ class GaussianModel:
                 deform_state,
                 self._deformation_table,
                 self.period,
-                self._motion_modes,  # v9: restore motion modes from checkpoint
+                self._motion_modes,
+                anchor_state,  # PhysX-Gaussian: anchor network state
+            ) = model_args
+        elif len(model_args) == 14:
+            # Checkpoint with motion_modes but without anchor_state
+            (
+                self._xyz,
+                self._scaling,
+                self._rotation,
+                self._density,
+                self.max_radii2D,
+                xyz_gradient_accum,
+                denom,
+                opt_dict,
+                self.spatial_lr_scale,
+                self.scale_bound,
+                deform_state,
+                self._deformation_table,
+                self.period,
+                self._motion_modes,
             ) = model_args
         else:
-            # Legacy checkpoint without motion_modes
+            # Legacy checkpoint without motion_modes (13 items)
             (
                 self._xyz,
                 self._scaling,
@@ -370,6 +417,15 @@ class GaussianModel:
         self.denom = denom
         self.optimizer.load_state_dict(opt_dict)
         self.setup_functions()  # Reset activation functions
+        
+        # PhysX-Gaussian: Restore anchor network state if available
+        if anchor_state is not None and self.use_anchor_deformation and self._deformation_anchor is not None:
+            self._deformation_anchor.load_state_dict(anchor_state)
+            print(f"[PhysX-Gaussian] Restored anchor deformation network state")
+            # Print V5 balance info if available
+            if hasattr(self._deformation_anchor, 'use_learnable_balance') and self._deformation_anchor.use_learnable_balance:
+                alpha = self._deformation_anchor.get_balance_alpha()
+                print(f"[PhysX-Boosted V5] Restored balance α = {alpha:.4f}")
 
     @property
     def get_scaling(self):
@@ -454,6 +510,15 @@ class GaussianModel:
         if self.use_low_rank_motion_modes:
             self._deformation.set_motion_modes_ref(self._motion_modes)
         
+        # PhysX-Gaussian: Initialize anchors and KNN binding
+        if self.use_anchor_deformation and self._deformation_anchor is not None:
+            self._deformation_anchor = self._deformation_anchor.to("cuda")
+            # Initialize anchors via FPS from point cloud
+            self._deformation_anchor.initialize_anchors(fused_point_cloud)
+            # Compute initial KNN binding
+            self._deformation_anchor.update_knn_binding(fused_point_cloud)
+            print(f"[PhysX-Gaussian] Anchors initialized and KNN binding computed")
+        
         self._deformation_table = torch.gt(torch.ones((self.get_xyz.shape[0]),device="cuda"),0)
 
         #! Generate one gaussian for debugging purpose
@@ -520,6 +585,79 @@ class GaussianModel:
                 "lr": training_args.deformation_lr_init * self.spatial_lr_scale,
                 "name": "motion_modes",
             })
+        
+        # PhysX-Gaussian: Add anchor deformation parameters to optimizer
+        if self.use_anchor_deformation and self._deformation_anchor is not None:
+            l.append({
+                "params": list(self._deformation_anchor.get_mlp_parameters()),
+                "lr": training_args.deformation_lr_init * self.spatial_lr_scale,
+                "name": "anchor_deformation",
+            })
+            l.append({
+                "params": list(self._deformation_anchor.get_grid_parameters()),
+                "lr": training_args.grid_lr_init * self.spatial_lr_scale,
+                "name": "anchor_transformer",
+            })
+            print(f"[PhysX-Gaussian] Added anchor deformation parameters to optimizer")
+            
+            # PhysX-Hybrid: Add residual network parameters (separate group for warmup control)
+            residual_params = self._deformation_anchor.get_residual_parameters()
+            if residual_params:
+                l.append({
+                    "params": residual_params,
+                    "lr": training_args.grid_lr_init * self.spatial_lr_scale,
+                    "name": "residual",  # Separate name for warmup control
+                })
+                print(f"[PhysX-Hybrid] Added residual HexPlane parameters to optimizer")
+            
+            # PhysX-Taylor: Add affine head parameters
+            affine_params = self._deformation_anchor.get_affine_parameters()
+            if affine_params:
+                l.append({
+                    "params": affine_params,
+                    "lr": training_args.deformation_lr_init * self.spatial_lr_scale,
+                    "name": "affine",
+                })
+                print(f"[PhysX-Taylor] Added affine head parameters to optimizer")
+            
+            # PhysX-Boosted: Add full HexPlane baseline parameters
+            hexplane_mlp_params = self._deformation_anchor.get_hexplane_mlp_parameters()
+            hexplane_grid_params = self._deformation_anchor.get_hexplane_grid_parameters()
+            if hexplane_mlp_params:
+                l.append({
+                    "params": hexplane_mlp_params,
+                    "lr": training_args.deformation_lr_init * self.spatial_lr_scale,
+                    "name": "hexplane_mlp",
+                })
+                print(f"[PhysX-Boosted] Added HexPlane MLP parameters to optimizer")
+            if hexplane_grid_params:
+                l.append({
+                    "params": hexplane_grid_params,
+                    "lr": training_args.grid_lr_init * self.spatial_lr_scale,
+                    "name": "hexplane_grid",
+                })
+                print(f"[PhysX-Boosted] Added HexPlane grid parameters to optimizer")
+            
+            # V5: Add learnable balance parameter
+            balance_params = self._deformation_anchor.get_balance_parameter()
+            if balance_params:
+                balance_lr = getattr(training_args, 'balance_lr', 0.001)
+                l.append({
+                    "params": balance_params,
+                    "lr": balance_lr,
+                    "name": "balance",
+                })
+                print(f"[PhysX-Boosted V5] Added learnable balance parameter to optimizer (lr={balance_lr})")
+            
+            # V7: Add uncertainty head parameters
+            uncertainty_params = self._deformation_anchor.get_uncertainty_parameters()
+            if uncertainty_params:
+                l.append({
+                    "params": uncertainty_params,
+                    "lr": training_args.deformation_lr_init * self.spatial_lr_scale,
+                    "name": "uncertainty",
+                })
+                print(f"[PhysX-Boosted V7] Added uncertainty head parameters to optimizer")
         
         # V7.2: Add alpha to optimizer
         if self.use_v7_2_consistency:
@@ -638,6 +776,19 @@ class GaussianModel:
             if param_group["name"] == "period":
                 lr = self.period_scheduler_args(iteration)
                 param_group['lr'] = lr
+    
+    def set_residual_learning_rate(self, lr: float):
+        """
+        Set learning rate for residual network (PhysX-Hybrid).
+        
+        Used for implementing warmup: set lr=0 during warmup, then restore.
+        
+        Args:
+            lr: Learning rate to set (0.0 during warmup)
+        """
+        for param_group in self.optimizer.param_groups:
+            if param_group["name"] == "residual":
+                param_group["lr"] = lr
 
     def construct_list_of_attributes(self):
         l = ["x", "y", "z", "nx", "ny", "nz"]
@@ -745,6 +896,22 @@ class GaussianModel:
                 self._alpha_network.load_state_dict(alpha_state["alpha_network"])
                 print(f"[V7.1] Loaded alpha network state")
         
+        # PhysX-Gaussian: Initialize anchors and KNN binding after loading
+        if self.use_anchor_deformation and self._deformation_anchor is not None:
+            self._deformation_anchor = self._deformation_anchor.to("cuda")
+            # Initialize anchors from loaded point cloud
+            fused_point_cloud = self._xyz.detach()
+            self._deformation_anchor.initialize_anchors(fused_point_cloud)
+            self._deformation_anchor.update_knn_binding(fused_point_cloud)
+            print(f"[PhysX-Gaussian] Anchors initialized and KNN binding computed from loaded model")
+        
+        # Ensure deformation table is on correct device
+        if self._deformation_table is not None:
+            self._deformation_table = self._deformation_table.to("cuda")
+        
+        # Initialize max_radii2D with correct size (must match number of Gaussians)
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        
         # Set up optimizer (fresh optimizer since we don't have optimizer state)
         self.training_setup(training_args)
         print(f"Initialized fresh optimizer (optimizer state not saved in model checkpoint)")
@@ -829,7 +996,11 @@ class GaussianModel:
         for group in self.optimizer.param_groups:
             if len(group["params"]) > 1:
                 continue
-            if group["name"]=='period':continue
+            # Skip non-per-Gaussian parameters (scalars, networks, etc.)
+            if group["name"] in ['period', 'balance', 'v7_2_alpha', 'v7_2_alpha_network',
+                                 'deformation', 'grid', 'hexplane_mlp', 'hexplane_grid',
+                                 'anchor', 'residual', 'affine']:
+                continue
             stored_state = self.optimizer.state.get(group["params"][0], None)
             if stored_state is not None:
                 stored_state["exp_avg"] = stored_state["exp_avg"][mask]
@@ -876,6 +1047,10 @@ class GaussianModel:
 
         self._deformation_accum = self._deformation_accum[valid_points_mask]
         self._deformation_table = self._deformation_table[valid_points_mask]
+        
+        # PhysX-Gaussian: Update KNN binding after pruning
+        if self.use_anchor_deformation and self._deformation_anchor is not None:
+            self._deformation_anchor.update_knn_binding(self._xyz)
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
@@ -953,6 +1128,10 @@ class GaussianModel:
 
         self._deformation_table = torch.cat([self._deformation_table,new_deformation_table],-1)
         self._deformation_accum = torch.zeros((self.get_xyz.shape[0], 3), device="cuda")
+        
+        # PhysX-Gaussian: Update KNN binding after densification
+        if self.use_anchor_deformation and self._deformation_anchor is not None:
+            self._deformation_anchor.update_knn_binding(self._xyz)
 
     def densify_and_split(self, grads, grad_threshold, densify_scale_threshold, N=2):
         n_init_points = self.get_xyz.shape[0]
@@ -1120,8 +1299,29 @@ class GaussianModel:
                         print(name," :",weight.grad.mean(), weight.grad.min(), weight.grad.max())
         print("-"*50)
 
+    def _get_hexplane_grid(self):
+        """
+        Get the HexPlane grid for regulation losses.
+        
+        Handles both:
+        - Standard mode: self._deformation.deformation_net.grid
+        - PhysX-Boosted mode: self._deformation_anchor.get_hexplane_grid()
+        """
+        # PhysX-Boosted: Get grid from anchor module's embedded HexPlane
+        if self.use_anchor_deformation and self._deformation_anchor is not None:
+            boosted_grid = self._deformation_anchor.get_hexplane_grid()
+            if boosted_grid is not None:
+                return boosted_grid
+        # Standard mode: Use original _deformation
+        if self._deformation is not None:
+            return self._deformation.deformation_net.grid
+        return None
+    
     def _plane_regulation(self):
-        multi_res_grids = self._deformation.deformation_net.grid.grids
+        grid = self._get_hexplane_grid()
+        if grid is None:
+            return torch.tensor(0.0, device="cuda")
+        multi_res_grids = grid.grids
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
         for grids in multi_res_grids:
@@ -1134,7 +1334,10 @@ class GaussianModel:
         return total
     
     def _time_regulation(self):
-        multi_res_grids = self._deformation.deformation_net.grid.grids
+        grid = self._get_hexplane_grid()
+        if grid is None:
+            return torch.tensor(0.0, device="cuda")
+        multi_res_grids = grid.grids
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
         for grids in multi_res_grids:
@@ -1147,8 +1350,11 @@ class GaussianModel:
         return total
     
     def _l1_regulation(self):
-                # model.grids is 6 x [1, rank * F_dim, reso, reso]
-        multi_res_grids = self._deformation.deformation_net.grid.grids
+        grid = self._get_hexplane_grid()
+        if grid is None:
+            return torch.tensor(0.0, device="cuda")
+        # model.grids is 6 x [1, rank * F_dim, reso, reso]
+        multi_res_grids = grid.grids
 
         total = 0.0
         for grids in multi_res_grids:
@@ -1163,6 +1369,244 @@ class GaussianModel:
     
     def compute_regulation(self, time_smoothness_weight, l1_time_planes_weight, plane_tv_weight):
         return plane_tv_weight * self._plane_regulation() + time_smoothness_weight * self._time_regulation() + l1_time_planes_weight * self._l1_regulation()
+
+    # =========================================================================
+    # PhysX-Gaussian: Anchor-based Deformation Methods
+    # =========================================================================
+    
+    def get_active_deformation_network(self):
+        """
+        Get the active deformation network (anchor-based or original HexPlane).
+        
+        Returns:
+            The active deformation network module
+        """
+        if self.use_anchor_deformation and self._deformation_anchor is not None:
+            return self._deformation_anchor
+        return self._deformation
+    
+    def compute_anchor_deformation(self, time, is_training=True):
+        """
+        Compute deformation using anchor-based spacetime transformer.
+        
+        This replaces the HexPlane+MLP deformation when use_anchor_deformation is True.
+        
+        Args:
+            time: Time tensor [N, 1] or scalar
+            is_training: If True, apply masking for physics completion
+        
+        Returns:
+            means3D_deformed: Deformed positions [N, 3]
+            scales_deformed: Deformed scales [N, 3]
+            rotations_deformed: Deformed rotations [N, 4]
+        """
+        if not self.use_anchor_deformation or self._deformation_anchor is None:
+            raise RuntimeError("Anchor deformation not enabled")
+        
+        means3D = self.get_xyz
+        density = self.get_density
+        scales = self._scaling
+        rotations = self._rotation
+        
+        # Ensure time has correct shape
+        if time.dim() == 0:
+            time = time.unsqueeze(0).unsqueeze(0).repeat(means3D.shape[0], 1)
+        elif time.dim() == 1:
+            time = time.unsqueeze(1)
+        if time.shape[0] == 1:
+            time = time.repeat(means3D.shape[0], 1)
+        
+        # Forward through anchor deformation network
+        means3D_deformed, scales_deformed, rotations_deformed = self._deformation_anchor(
+            means3D, scales, rotations, density, time, is_training=is_training
+        )
+        
+        return means3D_deformed, scales_deformed, rotations_deformed
+    
+    def compute_physics_completion_loss(self, time, iteration_ratio=0.0):
+        """
+        Compute PhysX-Gaussian physics completion loss L_phys.
+        
+        This loss trains the model to predict correct displacements for masked
+        anchors using only the information from unmasked anchors.
+        
+        L_phys = || D_masked - D_teacher ||_1
+        
+        Original mode:
+        - Uses cached predictions from the main render forward pass (which was masked)
+        - Only computes teacher (unmasked) predictions for comparison
+        
+        V10 mode (use_decoupled_mask=True):
+        - Main render pass used UNMASKED output (full power)
+        - Separately computes masked predictions here for L_phys
+        - Computes teacher (unmasked) predictions for comparison
+        
+        Args:
+            time: Time tensor for computing displacements
+            iteration_ratio: Current iteration / total iterations (for mask decay)
+        
+        Returns:
+            L_phys: Physics completion loss (scalar)
+        """
+        if not self.use_anchor_deformation or self._deformation_anchor is None:
+            return torch.tensor(0.0, device="cuda")
+        
+        # Check if we have cached predictions from the render pass
+        if self._deformation_anchor._last_anchor_displacements is None:
+            return torch.tensor(0.0, device="cuda")
+        
+        # Ensure time has correct shape
+        if time.dim() == 0:
+            time = time.unsqueeze(0).unsqueeze(0)
+        elif time.dim() == 1:
+            time = time.unsqueeze(1)
+        
+        # V10: Run masked forward separately (main render was unmasked)
+        if self._deformation_anchor.use_decoupled_mask:
+            # Run masked forward to get masked predictions
+            _ = self._deformation_anchor.forward_anchors_masked(time, iteration_ratio)
+        
+        # Run forward WITHOUT masking to get teacher predictions
+        # Use torch.no_grad() to avoid double backward through the graph
+        with torch.no_grad():
+            _ = self._deformation_anchor.forward_anchors_unmasked(time)
+        
+        # Compute the loss using cached masked predictions vs teacher predictions
+        L_phys = self._deformation_anchor.compute_physics_completion_loss()
+        
+        return L_phys
+    
+    def compute_anchor_smoothness_loss(self):
+        """
+        Compute PhysX-Gaussian anchor motion smoothness loss.
+        
+        This regularizes anchor displacements to be spatially smooth.
+        
+        Returns:
+            L_smooth: Anchor smoothness loss (scalar)
+        """
+        if not self.use_anchor_deformation or self._deformation_anchor is None:
+            return torch.tensor(0.0, device="cuda")
+        
+        return self._deformation_anchor.compute_anchor_smoothness_loss()
+    
+    def compute_consistency_loss(self, time):
+        """
+        V13: Compute consistency regularization loss.
+        
+        L_consist = ||masked_output - unmasked_output.detach()||
+        
+        This teaches the model to be robust to missing information.
+        """
+        if not self.use_anchor_deformation or self._deformation_anchor is None:
+            return torch.tensor(0.0, device="cuda")
+        
+        return self._deformation_anchor.compute_consistency_loss(time)
+    
+    def compute_temporal_smoothness_loss(self, time):
+        """
+        V14: Compute temporal smoothness loss (acceleration penalty).
+        
+        L_temporal = ||dx(t+ε) - 2*dx(t) + dx(t-ε)||²
+        
+        This encourages smooth motion over time.
+        """
+        if not self.use_anchor_deformation or self._deformation_anchor is None:
+            return torch.tensor(0.0, device="cuda")
+        
+        return self._deformation_anchor.compute_temporal_interp_loss(time)
+    
+    def compute_lagbert_loss(self, time, is_training=True):
+        """
+        V16: Compute Lagrangian Spatio-Temporal BERT loss.
+        
+        This method runs the spatio-temporal masked modeling and returns:
+        1. dx_center: displacement at center time for rendering
+        2. L_lagbert: the masked modeling loss
+        
+        Returns:
+            dx_center: [M, 3] anchor displacements for rendering
+            L_lagbert: Lagrangian-BERT loss (scalar)
+        """
+        if not self.use_anchor_deformation or self._deformation_anchor is None:
+            return None, torch.tensor(0.0, device="cuda")
+        
+        return self._deformation_anchor.compute_lagbert_loss(time, is_training)
+    
+    def is_st_coupled_render(self):
+        """
+        Check if V16 coupled render mode is enabled.
+        When True, rendering should use dx_center from compute_lagbert_loss().
+        """
+        if not self.use_anchor_deformation or self._deformation_anchor is None:
+            return False
+        return getattr(self._deformation_anchor, 'st_coupled_render', False) and \
+               getattr(self._deformation_anchor, 'use_spatiotemporal_mask', False)
+    
+    def get_st_cached_dx_center(self):
+        """
+        Get cached dx_center from V16 compute_lagbert_loss().
+        Used when st_coupled_render=True to share forward pass with rendering.
+        """
+        if not self.use_anchor_deformation or self._deformation_anchor is None:
+            return None
+        return getattr(self._deformation_anchor, '_last_anchor_displacements', None)
+    
+    def get_residual_magnitude(self):
+        """
+        Get PhysX-Hybrid residual displacement magnitude for L1 regularization.
+        
+        This forces the residual network to stay sparse - it should only activate
+        when the anchor network truly cannot explain the motion (KNN smoothing artifacts).
+        
+        Returns:
+            magnitude: Mean absolute residual displacement (scalar)
+        """
+        if not self.use_anchor_deformation or self._deformation_anchor is None:
+            return torch.tensor(0.0, device="cuda")
+        
+        return self._deformation_anchor.get_residual_magnitude()
+    
+    def get_affine_magnitude(self):
+        """
+        Get PhysX-Taylor affine matrix magnitude for L1 regularization.
+        
+        This forces the affine matrices to stay sparse - most regions should
+        have only rigid translation (A ≈ 0), with complex affine transformations
+        only at sharp boundaries like blood vessel edges.
+        
+        Returns:
+            magnitude: Mean absolute affine matrix elements (scalar)
+        """
+        if not self.use_anchor_deformation or self._deformation_anchor is None:
+            return torch.tensor(0.0, device="cuda")
+        
+        return self._deformation_anchor.get_affine_magnitude()
+    
+    def update_anchor_knn_binding(self):
+        """
+        Update KNN binding between Gaussians and anchors.
+        
+        This should be called after densification/pruning when Gaussian count changes.
+        """
+        if self.use_anchor_deformation and self._deformation_anchor is not None:
+            self._deformation_anchor.update_knn_binding(self.get_xyz)
+    
+    def save_anchor_deformation(self, path):
+        """Save anchor deformation network state."""
+        if self.use_anchor_deformation and self._deformation_anchor is not None:
+            torch.save(
+                self._deformation_anchor.state_dict(),
+                os.path.join(path, "anchor_deformation.pth")
+            )
+            print(f"[PhysX-Gaussian] Saved anchor deformation to {path}")
+    
+    def load_anchor_deformation(self, path):
+        """Load anchor deformation network state."""
+        anchor_path = os.path.join(path, "anchor_deformation.pth")
+        if self.use_anchor_deformation and self._deformation_anchor is not None and os.path.exists(anchor_path):
+            self._deformation_anchor.load_state_dict(torch.load(anchor_path, map_location="cuda"))
+            print(f"[PhysX-Gaussian] Loaded anchor deformation from {anchor_path}")
 
     def get_alpha(self, time=None):
         """
@@ -1250,7 +1694,7 @@ class GaussianModel:
         
         return None
 
-    def get_deformed_centers(self, time, use_v7_1_correction=False, correction_alpha=0.0):
+    def get_deformed_centers(self, time, use_v7_1_correction=False, correction_alpha=0.0, is_training=True, iteration_ratio=0.0):
         """
         Get deformed Gaussian centers with optional V7.1/V7.2 consistency-aware correction.
         
@@ -1271,16 +1715,22 @@ class GaussianModel:
             use_v7_1_correction: If True, apply V7.1 correction (external alpha)
             correction_alpha: Alpha coefficient for V7.1 correction (0=V7, >0=V7.1)
                              If None, uses trainable alpha (if enabled)
+            is_training: If True, enable masking for PhysX-Gaussian anchor deformation
+            iteration_ratio: Current iteration / total iterations (0.0 to 1.0)
+                            Used for PhysX-Gaussian mask decay scheduler
         
         Returns:
             means3D_final: Deformed (and optionally corrected) centers [N, 3]
             scales_final: Deformed scales (raw, before activation) [N, 3]
             rotations_final: Deformed rotations (raw, before activation) [N, 4]
         """
-        means3D = self.get_xyz  # [N, 3] canonical positions
-        density = self.get_density
-        scales = self._scaling
-        rotations = self._rotation
+        # Clone tensors to avoid in-place modification issues
+        # The original parameters are modified by optimizer.step() during training,
+        # which can cause "modified by inplace operation" errors in backward pass
+        means3D = self.get_xyz.clone()  # [N, 3] canonical positions
+        density = self.get_density.clone()
+        scales = self._scaling.clone()
+        rotations = self._rotation.clone()
         
         # Ensure time has correct shape
         if time.dim() == 0:
@@ -1290,16 +1740,36 @@ class GaussianModel:
         if time.shape[0] == 1:
             time = time.repeat(means3D.shape[0], 1)
         
-        # Step 1: V7 forward deformation
+        # Step 1: Forward deformation
         # y = mu + D_f(mu, t)
-        means3D_deformed, scales_deformed, rotations_deformed = self._deformation(
-            means3D, scales, rotations, density, time
-        )
+        # PhysX-Gaussian: Use anchor-based transformer instead of HexPlane+MLP
+        if self.use_anchor_deformation and self._deformation_anchor is not None:
+            # is_training=True enables masking for physics completion training
+            # is_training=False disables masking for evaluation
+            # iteration_ratio is used for mask decay scheduler
+            means3D_deformed, scales_deformed, rotations_deformed = self._deformation_anchor(
+                means3D, scales, rotations, density, time, is_training=is_training, iteration_ratio=iteration_ratio
+            )
+            # Ensure contiguous memory for CUDA rasterizer compatibility
+            means3D_deformed = means3D_deformed.contiguous()
+            scales_deformed = scales_deformed.contiguous()
+            rotations_deformed = rotations_deformed.contiguous()
+        else:
+            # Original X²-Gaussian: HexPlane+MLP deformation
+            means3D_deformed, scales_deformed, rotations_deformed = self._deformation(
+                means3D, scales, rotations, density, time
+            )
         
         # Determine if we need correction
         # V7.2 takes priority: if enabled, always apply correction with internal alpha
+        # Note: V7.2 correction is disabled for PhysX-Gaussian (anchor deformation)
+        # as they are alternative approaches to handle deformation
         apply_correction = False
         alpha = 0.0
+        
+        if self.use_anchor_deformation:
+            # PhysX-Gaussian doesn't use V7.2 correction - skip entirely
+            return means3D_deformed, scales_deformed, rotations_deformed
         
         if self.use_v7_2_consistency:
             # V7.2: Use internal alpha for end-to-end training
@@ -1483,17 +1953,33 @@ class GaussianModel:
             time_sampled = time_sampled.repeat(means3D_sampled.shape[0], 1)
         
         # Step 1: Forward deformation - get deformed positions y = mu_i + D_f(mu_i, t)
-        means3D_deformed, _, _ = self._deformation(
-            means3D_sampled, scales_sampled, rotations_sampled, density_sampled, time_sampled
-        )
+        # Handle PhysX-Boosted mode: Use HexPlane from anchor module
+        use_boosted = self.use_anchor_deformation and self._deformation_anchor is not None \
+                      and hasattr(self._deformation_anchor, 'use_boosted') and self._deformation_anchor.use_boosted
+        
+        if use_boosted:
+            # PhysX-Boosted: Use the HexPlane embedded in anchor module
+            means3D_deformed, _, _ = self._deformation_anchor.original_deformation(
+                means3D_sampled, scales_sampled, rotations_sampled, density_sampled, time_sampled
+            )
+        else:
+            means3D_deformed, _, _ = self._deformation(
+                means3D_sampled, scales_sampled, rotations_sampled, density_sampled, time_sampled
+            )
         
         # Compute D_f = y - x (forward deformation vector)
         D_f = means3D_deformed - means3D_sampled  # [N, 3]
         
         # Step 2: Backward deformation - get reconstructed positions x_hat = y + D_b(y, t)
-        means3D_reconstructed, D_b = self._deformation.forward_backward_position(
-            means3D_deformed, time_sampled
-        )
+        if use_boosted:
+            # PhysX-Boosted: Use HexPlane's backward from anchor module
+            means3D_reconstructed, D_b = self._deformation_anchor.forward_backward_hexplane(
+                means3D_deformed, time_sampled
+            )
+        else:
+            means3D_reconstructed, D_b = self._deformation.forward_backward_position(
+                means3D_deformed, time_sampled
+            )
         # D_b is the backward deformation vector returned by forward_backward_position
         
         # Step 3: Compute L1 loss between original and reconstructed positions

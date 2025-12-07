@@ -55,9 +55,11 @@ def initialize_gaussian(gaussians: GaussianModel, args: ModelParams, loaded_iter
                     args.source_path, "init_" + osp.basename(args.source_path) + ".npy"
                 )
             elif args.source_path.split(".")[-1] in ["pickle", "pkl"]:
+                # Use replace instead of split to preserve dots in filename (e.g., noise0.15)
+                basename = osp.basename(args.source_path).replace(".pickle", "").replace(".pkl", "")
                 ply_path = osp.join(
                     osp.dirname(args.source_path),
-                    "init_" + osp.basename(args.source_path).split(".")[0] + ".npy",
+                    "init_" + basename + ".npy",
                 )
             else:
                 raise ValueError("Could not recognize scene type!")

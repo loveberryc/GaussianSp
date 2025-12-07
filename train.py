@@ -1,6 +1,7 @@
 import os
 import os.path as osp
 import torch
+# torch.autograd.set_detect_anomaly(True)  # DEBUG: Disabled - may cause issues
 import torch.nn.functional as F
 from random import randint
 import sys
@@ -24,6 +25,48 @@ from x2_gaussian.utils.static_reweighting import StaticReweightingManager, Learn
 from x2_gaussian.utils.phase_gated_static import PhaseGatedStatic, apply_s2_preset
 from x2_gaussian.utils.dual_static_volume import DualStaticVolume, apply_s3_preset
 from x2_gaussian.utils.temporal_ensemble_static import TemporalEnsembleStatic, apply_s4_preset, initialize_gaussians_from_avg_ct
+
+def apply_physx_preset(opt, hyper):
+    """
+    Apply PhysX-Gaussian preset: Anchor-based Spacetime Transformer.
+    
+    PhysX-Gaussian replaces the HexPlane + MLP deformation field with an
+    anchor-based transformer that learns physical traction relationships
+    between anatomical structures via masked modeling (BERT-style).
+    
+    When use_anchor_deformation is enabled:
+    1. Disables HexPlane+MLP in favor of anchor transformer
+    2. Enables physics completion loss L_phys
+    3. Optionally reduces period consistency weight (not fully relying on periodicity)
+    4. Enables anchor motion smoothness regularization
+    """
+    if not getattr(hyper, 'use_anchor_deformation', False):
+        return
+    
+    print("=" * 60)
+    print("PHYSX-GAUSSIAN: ANCHOR-BASED SPACETIME TRANSFORMER ACTIVATED")
+    print("=" * 60)
+    print("Replacing HexPlane + MLP with Anchor Transformer:")
+    print(f"  - num_anchors: {hyper.num_anchors}")
+    print(f"  - anchor_k: {hyper.anchor_k}")
+    print(f"  - mask_ratio: {hyper.mask_ratio}")
+    print(f"  - transformer_dim: {hyper.transformer_dim}")
+    print(f"  - transformer_heads: {hyper.transformer_heads}")
+    print(f"  - transformer_layers: {hyper.transformer_layers}")
+    print("")
+    print("PhysX-Gaussian Losses:")
+    lambda_phys = getattr(hyper, 'lambda_phys', 0.1)
+    lambda_anchor_smooth = getattr(hyper, 'lambda_anchor_smooth', 0.01)
+    phys_warmup_steps = getattr(hyper, 'phys_warmup_steps', 2000)
+    print(f"  - L_phys (physics completion): λ={lambda_phys}")
+    print(f"  - L_anchor_smooth (anchor smoothness): λ={lambda_anchor_smooth}")
+    print(f"  - Physics warmup steps: {phys_warmup_steps}")
+    print("")
+    print("Key Innovation:")
+    print("  - Learn physical traction relationships via masked self-attention")
+    print("  - Generalize to irregular breathing patterns without periodic assumption")
+    print("=" * 60)
+
 
 def apply_v7_preset(opt, hyper):
     """
@@ -271,6 +314,9 @@ def training(
 ):
     # Apply v7 preset if enabled (must be done before setting up GaussianModel)
     apply_v7_preset(opt, hyper)
+    
+    # Apply PhysX-Gaussian preset if enabled
+    apply_physx_preset(opt, hyper)
     
     # Set up dataset
     scene = Scene(dataset, shuffle=False)
@@ -603,6 +649,28 @@ def scene_reconstruction(
     for iteration in range(first_iter, train_iterations + 1):
         iter_start.record()
 
+        # ================================================================
+        # V11: Pretrain-Finetune Stage Control
+        # ================================================================
+        use_pretrain_finetune = getattr(hyper, 'use_pretrain_finetune', False)
+        pretrain_steps = getattr(hyper, 'pretrain_steps', 3000)
+        finetune_anchor_lr_scale = getattr(hyper, 'finetune_anchor_lr_scale', 0.1)
+        
+        in_pretrain_stage = False
+        if use_pretrain_finetune and stage == 'fine':
+            fine_start = coarse_iter + 1 if 'coarse_iter' in dir() else 1
+            steps_in_fine = iteration - fine_start
+            in_pretrain_stage = steps_in_fine < pretrain_steps
+            
+            # Set flag in anchor module
+            if gaussians.use_anchor_deformation and gaussians._deformation_anchor is not None:
+                gaussians._deformation_anchor._in_pretrain_stage = in_pretrain_stage
+                
+                # Switch LR when transitioning from pretrain to finetune
+                if steps_in_fine == pretrain_steps:
+                    print(f"\n[V11] Pretrain complete. Switching to finetune stage.")
+                    print(f"[V11] Scaling anchor LR by {finetune_anchor_lr_scale}")
+
         # Update learning rate
         gaussians.update_learning_rate(iteration)
 
@@ -614,6 +682,26 @@ def scene_reconstruction(
         # Render X-ray projection
         # V7.1-trainable-α: Use correction during training if enabled
         use_train_correction = opt.use_trainable_alpha and stage == 'fine'
+        
+        # Compute iteration_ratio for PhysX-Gaussian mask decay scheduler
+        # iteration_ratio = 0.0 at start of fine stage, 1.0 at end
+        if stage == 'fine':
+            # Fine stage iterations: from (coarse_iter + 1) to train_iterations
+            fine_start = coarse_iter + 1
+            fine_total = train_iterations - coarse_iter
+            iteration_ratio = (iteration - fine_start) / max(fine_total - 1, 1)
+            iteration_ratio = max(0.0, min(1.0, iteration_ratio))
+        else:
+            iteration_ratio = 0.0
+        
+        # V16 Fix 2: If st_coupled_render=True, compute L_lagbert BEFORE rendering
+        # so that forward_anchors() uses the cached dx_center from compute_lagbert_loss()
+        # This ensures rendering and L_lagbert share the same forward pass.
+        _v16_lagbert_cached = None
+        if stage == 'fine' and gaussians.is_st_coupled_render():
+            time_tensor = torch.tensor(viewpoint_cam.time).to(gaussians.get_xyz.device)
+            _, _v16_lagbert_cached = gaussians.compute_lagbert_loss(time_tensor, is_training=True)
+        
         if use_train_correction:
             # Get current time for this view
             current_time = viewpoint_cam.time
@@ -624,10 +712,11 @@ def scene_reconstruction(
             render_pkg = render(
                 viewpoint_cam, gaussians, pipe, stage,
                 use_v7_1_correction=True,
-                correction_alpha=train_alpha if isinstance(train_alpha, float) else train_alpha.item() if not train_alpha.requires_grad else train_alpha
+                correction_alpha=train_alpha if isinstance(train_alpha, float) else train_alpha.item() if not train_alpha.requires_grad else train_alpha,
+                iteration_ratio=iteration_ratio
             )
         else:
-            render_pkg = render(viewpoint_cam, gaussians, pipe, stage)
+            render_pkg = render(viewpoint_cam, gaussians, pipe, stage, iteration_ratio=iteration_ratio)
         image, viewspace_point_tensor, visibility_filter, radii = (
             render_pkg["render"],
             render_pkg["viewspace_points"],
@@ -698,9 +787,14 @@ def scene_reconstruction(
                     loss["total"] = loss["total"] + opt.lambda_dssim * loss_dssim
         else:
             # Original behavior (no s1 reweighting or not in coarse stage)
-            loss["total"] += loss["render"]
-            if opt.lambda_dssim > 0:
-                loss["total"] = loss["total"] + opt.lambda_dssim * loss_dssim
+            # V11: Skip render loss during pretrain stage (only use L_phys)
+            if not in_pretrain_stage:
+                loss["total"] += loss["render"]
+                if opt.lambda_dssim > 0:
+                    loss["total"] = loss["total"] + opt.lambda_dssim * loss_dssim
+            else:
+                # V11 Pretrain: Only L_phys will be added later
+                loss["v11_pretrain"] = True
         
         # s2: Apply phase-gated weighting in static warm-up stage
         # s2 can be combined with s1 - it multiplies an additional phase-based weight
@@ -898,8 +992,16 @@ def scene_reconstruction(
             temporal_ensemble_static._last_L_vol = s4_L_vol
             temporal_ensemble_static._last_L_proj_avg = s4_L_proj_avg
 
-        # Prior loss
-        if stage=='fine' and iteration > 7000:
+        # Prior loss (L_pc) - Original X²-Gaussian SSRML core loss
+        # Renders I(t + n*T̂) and compares with I_gt to learn optimal breathing period T̂
+        # NOTE: For PhysX-Boosted, we enable this loss since it has full HexPlane baseline
+        # The period parameter gradient flows through new_time = t + n*exp(period)
+        use_anchor_deform_prior = getattr(hyper, 'use_anchor_deformation', False) and gaussians.use_anchor_deformation
+        use_boosted_prior = getattr(hyper, 'use_boosted', False)
+        # Skip only for pure PhysX-Gaussian (no HexPlane), enable for baseline and PhysX-Boosted
+        prior_anchor_skip = use_anchor_deform_prior and not use_boosted_prior
+        # Skip if lambda_prior=0 to avoid wasted computation
+        if stage=='fine' and iteration > 7000 and not prior_anchor_skip and opt.lambda_prior > 0:
             render_pkg_prior = render_prior_oneT(viewpoint_cam, gaussians, pipe, stage)
             image_prior = render_pkg_prior["render"]    
             render_loss_prior = l1_loss(image_prior, gt_image)
@@ -911,7 +1013,13 @@ def scene_reconstruction(
                 loss["total"] = loss["total"] + opt.lambda_prior * opt.lambda_dssim * loss_dssim_prior
 
         # 3D TV loss
-        if use_tv:
+        # NOTE: For PhysX-Boosted, we enable this loss with torch.no_grad() to avoid graph conflicts
+        # The query() function creates a second forward pass, but we only need the volume for TV regularization
+        use_anchor_mode_tv = getattr(hyper, 'use_anchor_deformation', False) and gaussians.use_anchor_deformation
+        use_boosted_tv = getattr(hyper, 'use_boosted', False)
+        # Skip only for pure PhysX-Gaussian, enable for baseline and PhysX-Boosted
+        skip_tv = use_anchor_mode_tv and not use_boosted_tv
+        if use_tv and not skip_tv:
             # Randomly get the tiny volume center
             tv_vol_center = (bbox[0] + tv_vol_sVoxel / 2) + (
                 bbox[1] - tv_vol_sVoxel - bbox[0]
@@ -929,8 +1037,16 @@ def scene_reconstruction(
             loss["tv"] = loss_tv
             loss["total"] = loss["total"] + opt.lambda_tv * loss_tv
 
-        # 4D TV loss
-        if hyper.time_smoothness_weight != 0 and stage=='fine':
+        # 4D TV loss (HexPlane regularization)
+        # NOTE: Skipped when using pure PhysX-Gaussian (HexPlane not used)
+        # BUT: Enabled for PhysX-Boosted (full HexPlane baseline + Anchor)
+        # V4: Can be explicitly disabled via --disable_4d_tv for ablation
+        use_anchor_deform = getattr(hyper, 'use_anchor_deformation', False) and gaussians.use_anchor_deformation
+        use_boosted = getattr(hyper, 'use_boosted', False)
+        disable_4d_tv = getattr(hyper, 'disable_4d_tv', False)
+        # PhysX-Boosted: Use HexPlane from anchor module (unless explicitly disabled)
+        skip_4d_tv = (use_anchor_deform and not use_boosted) or disable_4d_tv
+        if hyper.time_smoothness_weight != 0 and stage=='fine' and not skip_4d_tv:
             tv_loss_4d = gaussians.compute_regulation(hyper.time_smoothness_weight, hyper.l1_time_planes, hyper.plane_tv_weight)
             loss["4d_tv"] = tv_loss_4d
             loss["total"] = loss["total"] + tv_loss_4d
@@ -938,8 +1054,13 @@ def scene_reconstruction(
         # Inverse consistency loss and symmetry loss (only in fine stage when enabled)
         # NOTE: When V7.2 is enabled, L_inv is DISABLED because V7.2 uses D_b in the
         # main rendering path instead of as a regularization tool
+        # NOTE: When pure PhysX-Gaussian (use_anchor_deformation without boosted) is enabled,
+        # HexPlane-based losses are DISABLED. BUT: PhysX-Boosted enables them.
         use_v7_2 = getattr(opt, 'use_v7_2_consistency', False) and gaussians.use_v7_2_consistency
-        if stage == 'fine' and opt.use_inverse_consistency and opt.lambda_inv > 0 and not use_v7_2:
+        use_anchor = getattr(hyper, 'use_anchor_deformation', False) and gaussians.use_anchor_deformation
+        # PhysX-Boosted: Keep HexPlane losses enabled (we have full HexPlane baseline)
+        skip_hexplane_losses = use_v7_2 or (use_anchor and not use_boosted)
+        if stage == 'fine' and opt.use_inverse_consistency and opt.lambda_inv > 0 and not skip_hexplane_losses:
             time_tensor = torch.tensor(viewpoint_cam.time).to(gaussians.get_xyz.device).repeat(gaussians.get_xyz.shape[0], 1)
             
             # Check if symmetry loss should also be computed
@@ -966,7 +1087,8 @@ def scene_reconstruction(
 
         # Cycle motion consistency loss (only in fine stage when enabled)
         # Uses the learned breathing period T_hat to enforce motion periodicity
-        if stage == 'fine' and opt.use_cycle_motion and opt.lambda_cycle > 0:
+        # NOTE: Skipped when using pure PhysX-Gaussian. Enabled for PhysX-Boosted.
+        if stage == 'fine' and opt.use_cycle_motion and opt.lambda_cycle > 0 and not skip_hexplane_losses:
             time_tensor = torch.tensor(viewpoint_cam.time).to(gaussians.get_xyz.device).repeat(gaussians.get_xyz.shape[0], 1)
             
             loss_cycle = gaussians.compute_cycle_motion_loss(
@@ -979,7 +1101,8 @@ def scene_reconstruction(
 
         # Jacobian regularization loss (only in fine stage when enabled)
         # Penalizes negative determinants of the Jacobian to prevent local folding
-        if stage == 'fine' and opt.use_jacobian_reg and opt.lambda_jac > 0:
+        # NOTE: Skipped when using pure PhysX-Gaussian. Enabled for PhysX-Boosted.
+        if stage == 'fine' and opt.use_jacobian_reg and opt.lambda_jac > 0 and not skip_hexplane_losses:
             time_tensor = torch.tensor(viewpoint_cam.time).to(gaussians.get_xyz.device).repeat(gaussians.get_xyz.shape[0], 1)
             
             loss_jac = gaussians.compute_jacobian_loss(
@@ -1012,7 +1135,8 @@ def scene_reconstruction(
         # v10: Trajectory smoothing loss (only in fine stage when enabled)
         # L_traj = mean_{i,k} || x_i(t_{k+1}) - 2*x_i(t_k) + x_i(t_{k-1}) ||^2
         # Penalizes acceleration to smooth Gaussian trajectories over time
-        if stage == 'fine' and opt.use_trajectory_smoothing and opt.lambda_traj > 0:
+        # NOTE: Skipped when using pure PhysX-Gaussian. Enabled for PhysX-Boosted.
+        if stage == 'fine' and opt.use_trajectory_smoothing and opt.lambda_traj > 0 and not skip_hexplane_losses:
             time_tensor = torch.tensor(viewpoint_cam.time).to(gaussians.get_xyz.device)
             loss_traj = gaussians.compute_trajectory_smoothing_loss(
                 time_tensor,
@@ -1226,6 +1350,139 @@ def scene_reconstruction(
                     loss["v7_5_L_rt_rho"] = timewarp_losses["L_rt_rho"]
                     loss["total"] = loss["total"] + v7_5_lambda_rt_rho * timewarp_losses["L_rt_rho"]
 
+        # ====================================================================
+        # PhysX-Gaussian / PhysX-Hybrid / PhysX-Taylor: Anchor-based deformation losses
+        # ====================================================================
+        # L_phys (Physics Completion) and L_anchor_smooth use RE-FORWARD strategy:
+        # Do NOT reuse tensors from render pass, compute fresh forward for these losses
+        use_anchor = getattr(hyper, 'use_anchor_deformation', False)
+        use_hybrid = getattr(hyper, 'use_hybrid', False)
+        use_taylor = getattr(hyper, 'use_taylor', False)
+        
+        if stage == 'fine' and use_anchor and gaussians.use_anchor_deformation:
+            lambda_phys = getattr(hyper, 'lambda_phys', 0.1)
+            lambda_anchor_smooth = getattr(hyper, 'lambda_anchor_smooth', 0.01)
+            phys_warmup_steps = getattr(hyper, 'phys_warmup_steps', 2000)
+            
+            # PhysX-Hybrid: Residual warmup control
+            # "Draw the skeleton first, then add texture" - freeze residual initially
+            if use_hybrid:
+                lambda_residual = getattr(hyper, 'lambda_residual', 0.05)
+                residual_warmup_steps = getattr(hyper, 'residual_warmup_steps', 3000)
+                fine_start = coarse_iter + 1
+                steps_in_fine = iteration - fine_start
+                
+                # During warmup: lr=0 for residual (anchor learns first)
+                # After warmup: restore lr and add L1 regularization
+                if steps_in_fine < residual_warmup_steps:
+                    gaussians.set_residual_learning_rate(0.0)
+                else:
+                    # Restore learning rate (use grid_lr as base)
+                    gaussians.set_residual_learning_rate(
+                        opt.grid_lr_init * gaussians.spatial_lr_scale
+                    )
+                    
+                    # L_residual: L1 regularization to keep residual sparse
+                    # "Only use residual when anchor truly can't explain the motion"
+                    if lambda_residual > 0:
+                        L_residual = gaussians.get_residual_magnitude()
+                        loss["residual_reg"] = L_residual
+                        loss["total"] = loss["total"] + lambda_residual * L_residual
+            
+            # PhysX-Taylor: Affine matrix L1 regularization
+            # Forces deformation gradient A to stay sparse (most regions = rigid translation)
+            # Only complex affine at sharp boundaries (blood vessel edges)
+            if use_taylor:
+                lambda_taylor = getattr(hyper, 'lambda_taylor', 0.01)
+                if lambda_taylor > 0:
+                    L_taylor = gaussians.get_affine_magnitude()
+                    loss["taylor_reg"] = L_taylor
+                    loss["total"] = loss["total"] + lambda_taylor * L_taylor
+            
+            # Physics completion loss (only after warmup)
+            # Uses RE-FORWARD: compute_physics_completion_loss does its own forward pass
+            # V10: Also computes masked forward separately for L_phys
+            # V11: During pretrain stage, L_phys is the ONLY loss (no warmup, higher weight)
+            should_compute_phys = (iteration >= phys_warmup_steps and lambda_phys > 0) or in_pretrain_stage
+            if should_compute_phys:
+                time_tensor = torch.tensor(viewpoint_cam.time).to(gaussians.get_xyz.device)
+                iteration_ratio = iteration / opt.iterations if opt.iterations > 0 else 0.0
+                L_phys = gaussians.compute_physics_completion_loss(time_tensor, iteration_ratio)
+                loss["phys_completion"] = L_phys
+                
+                # V11: Use higher weight during pretrain (it's the only loss)
+                phys_weight = 1.0 if in_pretrain_stage else lambda_phys
+                loss["total"] = loss["total"] + phys_weight * L_phys
+            
+            # Anchor smoothness regularization
+            # Uses cached _last_anchor_displacements from render pass (same graph, safe)
+            if lambda_anchor_smooth > 0:
+                L_anchor_smooth = gaussians.compute_anchor_smoothness_loss()
+                loss["anchor_smooth"] = L_anchor_smooth
+                loss["total"] = loss["total"] + lambda_anchor_smooth * L_anchor_smooth
+            
+            # V13: Consistency regularization (mask as data augmentation)
+            use_consistency_mask = getattr(hyper, 'use_consistency_mask', False)
+            lambda_consist = getattr(hyper, 'lambda_consist', 0.1)
+            if use_consistency_mask and lambda_consist > 0:
+                time_tensor = torch.tensor(viewpoint_cam.time).to(gaussians.get_xyz.device)
+                L_consist = gaussians.compute_consistency_loss(time_tensor)
+                loss["consistency"] = L_consist
+                loss["total"] = loss["total"] + lambda_consist * L_consist
+            
+            # V14: Temporal smoothness (acceleration penalty)
+            use_temporal_interp = getattr(hyper, 'use_temporal_interp', False)
+            lambda_interp = getattr(hyper, 'lambda_interp', 0.1)
+            if use_temporal_interp and lambda_interp > 0:
+                time_tensor = torch.tensor(viewpoint_cam.time).to(gaussians.get_xyz.device)
+                L_temporal = gaussians.compute_temporal_smoothness_loss(time_tensor)
+                loss["temporal_smooth"] = L_temporal
+                loss["total"] = loss["total"] + lambda_interp * L_temporal
+            
+            # V16: Lagrangian Spatio-Temporal Masked Anchor Modeling
+            # This is a MAJOR training objective, not a tiny regularizer
+            use_spatiotemporal_mask = getattr(hyper, 'use_spatiotemporal_mask', False)
+            lambda_lagbert = getattr(hyper, 'lambda_lagbert', 0.5)
+            if use_spatiotemporal_mask and lambda_lagbert > 0:
+                # V16 Fix 2: If st_coupled_render=True, use cached L_lagbert from before rendering
+                # Otherwise compute it here (separate forward pass)
+                if _v16_lagbert_cached is not None:
+                    L_lagbert = _v16_lagbert_cached
+                else:
+                    time_tensor = torch.tensor(viewpoint_cam.time).to(gaussians.get_xyz.device)
+                    _, L_lagbert = gaussians.compute_lagbert_loss(time_tensor, is_training=True)
+                loss["lagbert"] = L_lagbert
+                loss["total"] = loss["total"] + lambda_lagbert * L_lagbert
+            
+            # V5: Learnable balance regularization
+            use_learnable_balance = getattr(hyper, 'use_learnable_balance', False)
+            lambda_balance = getattr(hyper, 'lambda_balance', 0.0)
+            if use_learnable_balance and gaussians._deformation_anchor is not None:
+                # Log current alpha value
+                current_alpha = gaussians._deformation_anchor.get_balance_alpha()
+                loss["balance_alpha"] = current_alpha
+                
+                # Balance regularization: L_balance = (α - 0.5)^2
+                if lambda_balance > 0:
+                    L_balance = gaussians._deformation_anchor.compute_balance_regularization_loss(alpha_target=0.5)
+                    loss["balance_reg"] = L_balance.item()
+                    loss["total"] = loss["total"] + lambda_balance * L_balance
+            
+            # V7: Uncertainty-Aware Fusion (Kendall Loss)
+            use_uncertainty_fusion = getattr(hyper, 'use_uncertainty_fusion', False)
+            if use_uncertainty_fusion and gaussians._deformation_anchor is not None:
+                # Apply Kendall loss: L_total = L_render/(2Σ) + λ*log(Σ)
+                # This modifies the total loss to incorporate uncertainty
+                loss["total"] = gaussians._deformation_anchor.compute_kendall_loss(loss["total"])
+                
+                # Log uncertainty stats
+                unc_stats = gaussians._deformation_anchor.get_uncertainty_stats()
+                if unc_stats:
+                    loss["unc_weight_hex"] = unc_stats.get('weight_hex', 0.5)
+                    loss["unc_weight_anchor"] = unc_stats.get('weight_anchor', 0.5)
+                    loss["unc_sigma_hex"] = unc_stats.get('sigma_hex', 1.0)
+                    loss["unc_sigma_anchor"] = unc_stats.get('sigma_anchor', 1.0)
+        
         loss["total"].backward()
         iter_end.record()
         torch.cuda.synchronize()
@@ -1233,11 +1490,13 @@ def scene_reconstruction(
 
         with torch.no_grad():
             # Adaptive control
-            gaussians.max_radii2D[visibility_filter] = torch.max(
-                gaussians.max_radii2D[visibility_filter], radii[visibility_filter]
-            )
-            gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
-            if iteration < opt.densify_until_iter:
+            # V11: Skip densification during pretrain stage (no render gradients)
+            if not in_pretrain_stage:
+                gaussians.max_radii2D[visibility_filter] = torch.max(
+                    gaussians.max_radii2D[visibility_filter], radii[visibility_filter]
+                )
+                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+            if iteration < opt.densify_until_iter and not in_pretrain_stage:
                 if (
                     iteration > opt.densify_from_iter
                     and iteration % opt.densification_interval == 0
@@ -1367,6 +1626,13 @@ def scene_reconstruction(
                     for key, value in s4_stats.items():
                         if not isinstance(value, list):  # Skip shape info
                             metrics[f's4_{key}'] = value
+            
+            # PhysX-Gaussian: Log anchor-based deformation statistics
+            if stage == 'fine' and getattr(hyper, 'use_anchor_deformation', False) and gaussians.use_anchor_deformation:
+                if "phys_completion" in loss:
+                    metrics['physx_L_phys'] = loss["phys_completion"].item() if isinstance(loss["phys_completion"], torch.Tensor) else loss["phys_completion"]
+                if "anchor_smooth" in loss:
+                    metrics['physx_L_smooth'] = loss["anchor_smooth"].item() if isinstance(loss["anchor_smooth"], torch.Tensor) else loss["anchor_smooth"]
 
             training_report(
                 tb_writer,

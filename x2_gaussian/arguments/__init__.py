@@ -556,6 +556,258 @@ class ModelHiddenParams(ParamGroup):
         self.gating_hidden_size = 32  # Hidden dimension for gating MLP
         self.gating_num_layers = 2  # Number of hidden layers in gating MLP
         
+        # =====================================================================
+        # PhysX-Gaussian: Anchor-based Spacetime Transformer Deformation
+        # =====================================================================
+        # PhysX-Gaussian replaces the HexPlane + MLP deformation field with an
+        # Anchor-based Spacetime Transformer that learns physical traction
+        # relationships between anatomical structures via masked modeling.
+        #
+        # Key Innovation:
+        # - Original X2-Gaussian: relies on implicit periodic fitting, poor generalization
+        # - PhysX-Gaussian: uses physical anchors + attention to infer deformation
+        #   even with irregular breathing patterns
+        #
+        # Architecture:
+        # 1. FPS sampling: select num_anchors points as physical anchors
+        # 2. KNN binding: each Gaussian binds to anchor_k nearest anchors (skinning weights)
+        # 3. Spacetime Transformer: anchors attend to each other with time encoding
+        # 4. Masked Modeling: randomly mask anchor features during training (BERT-style)
+        # 5. Interpolation: Gaussian displacement = weighted sum of bound anchor displacements
+        self.use_anchor_deformation = False  # Master switch for PhysX-Gaussian
+        self.num_anchors = 1024  # Number of FPS-sampled physical anchors
+        self.anchor_k = 10  # Number of nearest anchors each Gaussian binds to (KNN)
+        self.mask_ratio = 0.25  # Ratio of anchors to mask during training (BERT-style)
+        self.transformer_dim = 64  # Hidden dimension of spacetime transformer
+        self.transformer_heads = 4  # Number of attention heads
+        self.transformer_layers = 2  # Number of transformer encoder layers
+        self.anchor_time_embed_dim = 16  # Time embedding dimension for anchors
+        self.anchor_pos_embed_dim = 32  # Position embedding dimension for anchors
+        
+        # PhysX-Gaussian loss parameters
+        self.lambda_phys = 0.1  # Weight for physics completion loss L_phys
+        self.lambda_anchor_smooth = 0.01  # Weight for anchor motion smoothness regularization
+        self.phys_warmup_steps = 2000  # Steps before applying L_phys (allow basic structure to form)
+        
+        # PhysX-Gaussian mask decay scheduler
+        # When enabled, mask_ratio linearly decays from mask_decay_start to 0 over training
+        # This allows more masking early (learn physics) and less later (precise reconstruction)
+        self.use_mask_decay = False  # Enable linear decay of mask_ratio
+        self.mask_decay_start = 0.5  # Starting mask_ratio at iteration 0 (decays to 0)
+        
+        # ====================================================================
+        # PhysX-Hybrid: "Physical Skeleton + Neural Skin" Architecture
+        # ====================================================================
+        # Design Philosophy:
+        #   Δx_total = Δx_anchor + Δx_residual
+        #   - Anchor (skeleton): 95% macro motion via Transformer + KNN (topology-preserving)
+        #   - Residual (skin): 5% micro details via lightweight HexPlane (high-frequency)
+        #
+        # The residual is heavily regularized (L1) and warmup-delayed to prevent
+        # it from "stealing" work from the anchor network. It only activates to
+        # fix what the anchor truly cannot express (KNN smoothing artifacts).
+        self.use_hybrid = False  # Enable hybrid mode (Anchor + HexPlane residual)
+        self.lambda_residual = 0.05  # L1 regularization weight for residual (force sparsity)
+        self.residual_warmup_steps = 3000  # Freeze residual for N steps after fine stage starts
+        self.residual_dim = 8  # Extremely lightweight HexPlane (just for micro-corrections)
+        self.residual_resolution = [64, 64, 64, 50]  # [X, Y, Z, T] resolution for residual HexPlane
+        
+        # ====================================================================
+        # PhysX-Taylor: Neural Taylor Anchors (First-Order Deformation Theory)
+        # ====================================================================
+        # Upgrade from zero-order (translation only) to first-order Taylor expansion:
+        #
+        #   Δx_point = Σ w_pk * (t_k + A_k · (x_point - x_anchor_k))
+        #
+        # Where:
+        #   t_k ∈ R³: Translation vector for anchor k
+        #   A_k ∈ R³ˣ³: Local affine deformation gradient (rotation/scale/shear)
+        #   (x_point - x_anchor_k): Local coordinates relative to anchor
+        #
+        # This allows sparse anchors to precisely describe complex sharp deformations
+        # (micro-vessels, edges) that zero-order KNN interpolation would smooth out.
+        self.use_taylor = False  # Enable first-order Taylor expansion
+        self.lambda_taylor = 0.01  # L1 regularization for affine matrix (force sparsity)
+        
+        # ====================================================================
+        # PhysX-Boosted: Full Baseline + Physical Correction Architecture
+        # ====================================================================
+        # Strategy: "Stand on the shoulders of giants to reach higher"
+        #   Δμ_total = Δμ_hexplane(t) + Δμ_anchor(t)
+        #
+        # Keep 100% of X²-Gaussian baseline (HexPlane, all losses, rendering)
+        # Add Anchor Transformer as "physical correction force" to boost:
+        #   - HexPlane: "Paint the skin" (high-freq texture, micro-deformation)
+        #   - Anchor: "Draw the skeleton" (anatomy structure, physical consistency)
+        #
+        # Effect: 100% Baseline capability + 10% physical robustness = SOTA
+        self.use_boosted = False  # Enable PhysX-Boosted mode (HexPlane + Anchor)
+        
+        # PhysX-Boosted V4: Disable specific losses for ablation study
+        self.disable_4d_tv = False  # Disable L_4d_tv (HexPlane regularization) in boosted mode
+        
+        # ====================================================================
+        # PhysX-Boosted V5: Learnable Balance between HexPlane and Anchor
+        # ====================================================================
+        # Formula: Δx_total = (1 - α) · Δx_hexplane + α · Δx_anchor
+        # α = sigmoid(τ), τ is learnable
+        self.use_learnable_balance = False  # Enable learnable balance (V5)
+        self.balance_alpha_init = 0.5  # Initial α value (0.5 = equal weight)
+        self.balance_lr = 0.001  # Learning rate for balance parameter
+        self.lambda_balance = 0.0  # Regularization weight for L_balance = (α - 0.5)^2
+        
+        # ====================================================================
+        # PhysX-Boosted V6: Orthogonal Gradient Projection
+        # ====================================================================
+        # Core idea: HexPlane (A) is the "base", Anchor (B) learns the residual
+        # Forward: Δx_total = Δx_hex + Δx_anchor (direct sum)
+        # Backward: Project out the component of Anchor's gradient along HexPlane's gradient
+        #   grad_B_orth = grad_B - proj_{grad_A}(grad_B)
+        # This forces Anchor to only learn what HexPlane cannot capture
+        self.use_orthogonal_projection = False  # Enable V6 orthogonal gradient projection
+        self.ortho_projection_strength = 1.0  # How much to project out (1.0 = full projection)
+        
+        # V8: Reverse Orthogonal Gradient Projection (Anchor as base, HexPlane learns residual)
+        # Same as V6 but with A and B swapped:
+        # - Anchor (A) is the "base" that learns easily-captured patterns
+        # - HexPlane (B) is constrained to learn only the residual (orthogonal direction)
+        self.use_reverse_orthogonal_projection = False  # Enable V8
+        
+        # ====================================================================
+        # PhysX-Boosted V7: Uncertainty-Aware Fusion (Aleatoric Uncertainty)
+        # ====================================================================
+        # Core idea: Both HexPlane and Anchor output displacement + uncertainty (log σ²)
+        # Fusion uses inverse variance weighting: confident branch dominates
+        # Loss uses Kendall formulation to prevent "blind confidence"
+        #
+        # Forward:
+        #   w_A = 1/(σ_A² + ε), w_B = 1/(σ_B² + ε)
+        #   Δx_final = (w_A·Δx_hex + w_B·Δx_anchor) / (w_A + w_B)
+        #
+        # Loss (Kendall et al. CVPR 2017):
+        #   L_total = L_render/(2Σ) + 0.5·log(Σ)  where Σ = σ_A² + σ_B²
+        self.use_uncertainty_fusion = False  # Enable V7 uncertainty-aware fusion
+        self.uncertainty_eps = 1e-6  # Epsilon for numerical stability
+        self.lambda_uncertainty = 0.5  # Weight for uncertainty regularization log(Σ)
+        self.uncertainty_init = 0.0  # Initial log(σ²) value (0 means σ²=1)
+        
+        # ====================================================================
+        # PhysX-Boosted V10: Decoupled Masked Modeling
+        # ====================================================================
+        # Core idea: Decouple rendering from mask training
+        # - Rendering uses UNMASKED output (full power)
+        # - L_phys separately supervises masked prediction
+        #
+        # Training step:
+        #   1. Forward WITHOUT mask → render → L_render (main loss)
+        #   2. Forward WITH mask → L_phys = ||masked_pred - teacher_pred||
+        #
+        # This ensures:
+        #   - Best rendering quality (no information loss from masking)
+        #   - Mask training only affects representation learning
+        self.use_decoupled_mask = False  # Enable V10 decoupled masked modeling
+        
+        # ====================================================================
+        # PhysX-Boosted V11: Pretrain-Finetune Masked Modeling
+        # ====================================================================
+        # Core idea: True BERT-style two-stage training
+        # Stage 1 (Pretrain): Only L_phys, no rendering, high mask ratio
+        #   - Forces model to learn physical relationships
+        #   - No "shortcut" through L_render
+        # Stage 2 (Finetune): Normal rendering with low/frozen anchor LR
+        #   - Preserves learned physical knowledge
+        #
+        # This mimics BERT's pretrain-finetune paradigm
+        self.use_pretrain_finetune = False  # Enable V11
+        self.pretrain_steps = 3000  # Steps for physics-only pretraining
+        self.pretrain_mask_ratio = 0.5  # Higher mask ratio during pretrain
+        self.pretrain_only_anchor = True  # Only train anchor during pretrain
+        self.finetune_anchor_lr_scale = 0.1  # Scale anchor LR during finetune
+        
+        # ====================================================================
+        # PhysX-Boosted V12: Temporal Mask (Time-step Masking)
+        # ====================================================================
+        # Core idea: Mask entire time steps instead of random spatial anchors
+        # - Given anchor motions at t=0,1,2,4,5, predict t=3
+        # - More physically meaningful: predict motion at unseen time
+        # - Learns temporal continuity and physical dynamics
+        #
+        # Implementation:
+        #   - During training, randomly mask 25% of time steps
+        #   - All anchors at masked time step use [MASK] token
+        #   - L_phys compares masked prediction vs teacher
+        self.use_temporal_mask = False  # Enable V12 temporal masking
+        self.temporal_mask_ratio = 0.25  # Ratio of time steps to mask
+        
+        # ====================================================================
+        # PhysX-Boosted V13: Consistency Regularization
+        # ====================================================================
+        # Core insight: V11 failed because L_phys has no external supervision
+        # V13 uses mask as DATA AUGMENTATION, not pretraining
+        #
+        # Design:
+        #   unmasked_out = forward(no mask)  → used for rendering
+        #   masked_out = forward(with mask)  → used for consistency
+        #   L_consist = ||masked_out - unmasked_out.detach()||
+        #
+        # Key: detach() prevents gradient to unmasked branch
+        #      masked branch must learn to give consistent output even with missing info
+        # This teaches ROBUSTNESS, not representation
+        self.use_consistency_mask = False  # Enable V13
+        self.lambda_consist = 0.1  # Weight for consistency loss
+        
+        # ====================================================================
+        # PhysX-Boosted V14: Temporal Interpolation
+        # ====================================================================
+        # Core insight: V12 failed because masking entire timestep is too hard
+        # V14: Instead of masking, predict intermediate frames
+        #
+        # Design:
+        #   Given: anchor motions at t=t1 and t=t2 (as context)
+        #   Task: predict anchor motion at t_mid = (t1+t2)/2
+        #   Loss: L_interp = ||pred(t_mid|t1,t2) - forward(t_mid)||
+        #
+        # This has clear supervision (real t_mid exists in training data)
+        self.use_temporal_interp = False  # Enable V14
+        self.lambda_interp = 0.1  # Weight for interpolation loss
+        self.interp_context_range = 0.2  # Time range for context (t1, t2)
+        
+        # ====================================================================
+        # PhysX-Boosted V16: Lagrangian Spatio-Temporal Masked Anchor Modeling
+        # ====================================================================
+        # Core insight: Previous mask variants (V10-V15) either:
+        #   - Destroy spatial info completely, or
+        #   - Act as weak regularizers, not first-class objectives
+        #
+        # V16 Design:
+        #   1. Tokens are (anchor, time) pairs in a spatio-temporal window
+        #   2. Transformer attends across BOTH anchors and time steps
+        #   3. Mask flag embedding (NOT replacing spatial/temporal info)
+        #   4. L_lagbert = L1(masked_out, full_out.detach()) on masked tokens
+        #   5. L_lagbert is a MAJOR training objective, not a tiny regularizer
+        #
+        # Key difference from BERT:
+        #   - We preserve positional info, only add mask flag embedding
+        #   - This allows model to know WHERE to predict, but not WHAT
+        self.use_spatiotemporal_mask = False  # Enable V16
+        self.lambda_lagbert = 0.5  # Weight for Lagrangian-BERT loss (should be significant!)
+        self.st_window_size = 3  # Number of time steps in window (K)
+        self.st_time_delta = 0.1  # Time step between samples (e.g., t-0.1, t, t+0.1)
+        self.st_mask_ratio = 0.3  # Fraction of (anchor, time) tokens to mask
+        
+        # V16 Fix 1: Scale down mask_flag_embed to reduce interference
+        # Problem: mask_embed is added directly, may dominate original features
+        # Solution: scale it down (e.g., 0.1) so it's a small perturbation
+        # Default 1.0 = original behavior (no scaling)
+        self.st_mask_embed_scale = 1.0
+        
+        # V16 Fix 2: Couple rendering with L_lagbert
+        # Problem: render uses forward_anchors(), L_lagbert uses forward_anchors_st()
+        #          Two separate forward passes may cause inconsistent learning
+        # Solution: Use dx_center from compute_lagbert_loss() for rendering
+        # Default False = original behavior (separate forward passes)
+        self.st_coupled_render = False
+        
         super().__init__(parser, "ModelHiddenParams")
 
 
