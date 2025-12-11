@@ -26,3 +26,6 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# DIGS subproject (external, not part of this repo)
+DIGS-main/
