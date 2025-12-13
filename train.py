@@ -717,6 +717,11 @@ def scene_reconstruction(
             )
         else:
             render_pkg = render(viewpoint_cam, gaussians, pipe, stage, iteration_ratio=iteration_ratio)
+        
+        # M2.1: Set current step for trust-region schedule
+        if gaussians._deformation_anchor is not None:
+            gaussians._deformation_anchor.set_current_step(iteration)
+        
         image, viewspace_point_tensor, visibility_filter, radii = (
             render_pkg["render"],
             render_pkg["viewspace_points"],
@@ -1482,8 +1487,158 @@ def scene_reconstruction(
                     loss["unc_weight_anchor"] = unc_stats.get('weight_anchor', 0.5)
                     loss["unc_sigma_hex"] = unc_stats.get('sigma_hex', 1.0)
                     loss["unc_sigma_anchor"] = unc_stats.get('sigma_anchor', 1.0)
+            
+            # ================================================================
+            # M1: Uncertainty-Gated Residual Fusion
+            # ================================================================
+            # L_gate: Sparsity regularization on β (MDL-style)
+            # Encourages "use Lagrangian when possible" (prefer β → 0)
+            fusion_mode = getattr(hyper, 'fusion_mode', 'fixed_alpha')
+            m1_lambda_gate = getattr(hyper, 'm1_lambda_gate', 0.0)
+            m1_lambda_uncertainty = getattr(hyper, 'm1_lambda_uncertainty', 0.0)
+            if fusion_mode == 'uncertainty_gated' and gaussians._deformation_anchor is not None:
+                # L_gate: Sparsity regularization on β
+                if m1_lambda_gate > 0:
+                    L_gate = gaussians._deformation_anchor.compute_gate_sparsity_loss()
+                    loss["gate_sparsity"] = L_gate
+                    loss["total"] = loss["total"] + m1_lambda_gate * L_gate
+                
+                # L_unc: Uncertainty supervision loss (M1.1)
+                if m1_lambda_uncertainty > 0:
+                    L_unc = gaussians._deformation_anchor.compute_uncertainty_supervision_loss()
+                    loss["uncertainty_supervision"] = L_unc
+                    loss["total"] = loss["total"] + m1_lambda_uncertainty * L_unc
+                
+                # Log M1 statistics
+                m1_stats = gaussians._deformation_anchor.get_m1_statistics()
+                if m1_stats.get('beta_mean') is not None:
+                    loss["m1_beta_mean"] = m1_stats['beta_mean']
+                    loss["m1_beta_min"] = m1_stats['beta_min']
+                    loss["m1_beta_max"] = m1_stats['beta_max']
+                if m1_stats.get('s_E_mean') is not None:
+                    loss["m1_s_E_mean"] = m1_stats['s_E_mean']
+                
+                # Print M1.2 stats periodically
+                if iteration % 1000 == 0:
+                    hex_w = m1_stats.get('beta_mean', 0.01)  # beta_mean is actually hex_weight in M1.2
+                    gamma = hex_w - 0.01 if hex_w else 0
+                    print(f"[M1.2] iter={iteration}: hex_weight={hex_w:.4f} (γ={gamma:+.4f}), "
+                          f"s_E_mean={m1_stats.get('s_E_mean', 0):.4f}")
+            
+            # ================================================================
+            # M2.2: Bounded Perturb + Trust-Region + Residual Norm Logging
+            # ================================================================
+            if fusion_mode == 'bounded_perturb' and gaussians._deformation_anchor is not None:
+                m2_stats = gaussians._deformation_anchor.get_m2_statistics()
+                if m2_stats.get('eps_raw') is not None:
+                    loss["m2_eps_raw"] = m2_stats['eps_raw']
+                    loss["m2_eps_eff"] = m2_stats['eps_eff']
+                    loss["m2_rho"] = m2_stats['rho']
+                    loss["m2_warmup_ratio"] = m2_stats['warmup_ratio']
+                    # M2.2: Norm statistics
+                    if m2_stats.get('mean_norm_E') is not None:
+                        loss["m2_norm_E"] = m2_stats['mean_norm_E']
+                        loss["m2_norm_H"] = m2_stats['mean_norm_H']
+                
+                # Print M2.2 stats periodically
+                if iteration % 1000 == 0:
+                    eps_raw = m2_stats.get('eps_raw', 0)
+                    eps_eff = m2_stats.get('eps_eff', 0)
+                    rho = m2_stats.get('rho', 0)
+                    is_frozen = m2_stats.get('is_frozen', False)
+                    warmup_ratio = m2_stats.get('warmup_ratio', 1.0)
+                    schedule_mode = m2_stats.get('schedule_mode', 'none')
+                    residual_mode = m2_stats.get('residual_mode', 'tanh')
+                    mean_norm_E = m2_stats.get('mean_norm_E', 0)
+                    mean_norm_H = m2_stats.get('mean_norm_H', 0)
+                    frozen_str = " [FROZEN]" if is_frozen else ""
+                    print(f"[M2.2] iter={iteration}: ε_raw={eps_raw:.6f}, ε_eff={eps_eff:.6f}, "
+                          f"ρ={rho:.4f}, H={residual_mode}, ||Δ||={mean_norm_E:.4f}, ||H||={mean_norm_H:.4f}{frozen_str}")
+            
+            # ================================================================
+            # M3: Low-Frequency Leakage Penalty (LP Regularization)
+            # ================================================================
+            # "Low-frequency leakage regularization prevents the Eulerian stream
+            #  from explaining global motion, reserving it for high-frequency
+            #  corrective details around the Lagrangian manifold."
+            if (fusion_mode == 'bounded_perturb' and 
+                gaussians._deformation_anchor is not None and
+                gaussians._deformation_anchor.lp_enable):
+                
+                L_LP = gaussians._deformation_anchor.compute_lp_loss()
+                lambda_lp = gaussians._deformation_anchor.lambda_lp
+                loss["L_LP"] = L_LP
+                loss["total"] = loss["total"] + lambda_lp * L_LP
+                
+                # Log LP statistics
+                lp_stats = gaussians._deformation_anchor.get_lp_statistics()
+                if lp_stats.get('lp_loss') is not None:
+                    loss["m3_lp_loss"] = lp_stats['lp_loss']
+                    loss["m3_lp_mean"] = lp_stats['lp_mean']
+                    loss["m3_lp_ratio"] = lp_stats['lp_ratio']
+                
+                # Print M3 stats periodically
+                if iteration % 1000 == 0:
+                    lp_loss = lp_stats.get('lp_loss', 0)
+                    lp_mean = lp_stats.get('lp_mean', 0)
+                    lp_ratio = lp_stats.get('lp_ratio', 0)
+                    lp_mode = lp_stats.get('lp_mode', 'knn_mean')
+                    print(f"[M3] iter={iteration}: L_LP={lp_loss:.6f}, ||LP(Δ)||={lp_mean:.4f}, "
+                          f"ratio={lp_ratio:.4f}, mode={lp_mode}")
+            
+            # ================================================================
+            # M4: Subspace Decoupling Regularization
+            # ================================================================
+            # "Subspace decoupling regularization discourages the Eulerian residual
+            #  from aligning with the Lagrangian deformation responses, forcing it
+            #  to model complementary details rather than shortcuts."
+            if (fusion_mode == 'bounded_perturb' and 
+                gaussians._deformation_anchor is not None and
+                gaussians._deformation_anchor.decouple_enable):
+                
+                # Need means3D and time for decoupling computation
+                means3D = gaussians.get_xyz
+                time_input = viewpoint_cam.time
+                if isinstance(time_input, (int, float)):
+                    time_input = torch.tensor([[time_input]], device='cuda')
+                
+                L_decouple = gaussians._deformation_anchor.compute_decouple_loss(means3D, time_input)
+                lambda_decouple = gaussians._deformation_anchor.lambda_decouple
+                loss["L_decouple"] = L_decouple
+                loss["total"] = loss["total"] + lambda_decouple * L_decouple
+                
+                # Log decoupling statistics
+                decouple_stats = gaussians._deformation_anchor.get_decouple_statistics()
+                if decouple_stats.get('decouple_loss') is not None:
+                    loss["m4_decouple_loss"] = decouple_stats['decouple_loss']
+                    loss["m4_corr_mean"] = decouple_stats['corr_mean']
+                    if decouple_stats.get('grad_L_norm') is not None:
+                        loss["m4_grad_L_norm"] = decouple_stats['grad_L_norm']
+                        loss["m4_grad_E_norm"] = decouple_stats['grad_E_norm']
+                
+                # Print M4 stats periodically
+                if iteration % 1000 == 0:
+                    dec_loss = decouple_stats.get('decouple_loss', 0)
+                    corr_mean = decouple_stats.get('corr_mean', 0)
+                    dec_mode = decouple_stats.get('decouple_mode', 'velocity_corr')
+                    stopgrad = decouple_stats.get('stopgrad_L', True)
+                    grad_L = decouple_stats.get('grad_L_norm')
+                    grad_E = decouple_stats.get('grad_E_norm')
+                    if grad_L is not None:
+                        print(f"[M4] iter={iteration}: L_dec={dec_loss:.6f}, |cos|={corr_mean:.4f}, "
+                              f"||g_L||={grad_L:.4f}, ||g_E||={grad_E:.4f}, mode={dec_mode}, sg_L={stopgrad}")
+                    else:
+                        print(f"[M4] iter={iteration}: L_dec={dec_loss:.6f}, |cos|={corr_mean:.4f}, "
+                              f"mode={dec_mode}, stopgrad_L={stopgrad}")
         
         loss["total"].backward()
+        
+        # M2.1: Zero out ρ gradients during freeze period
+        if (gaussians._deformation_anchor is not None and
+            gaussians._deformation_anchor.should_freeze_rho()):
+            if hasattr(gaussians._deformation_anchor, 'rho') and gaussians._deformation_anchor.rho.grad is not None:
+                gaussians._deformation_anchor.rho.grad.zero_()
+        
         iter_end.record()
         torch.cuda.synchronize()
 

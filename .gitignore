@@ -29,3 +29,7 @@ Thumbs.db
 
 # DIGS subproject (external, not part of this repo)
 DIGS-main/
+
+# Raw medical data files (too large, patient data)
+查桂群CT.rar
+查桂群双平面.7z

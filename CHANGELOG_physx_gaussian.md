@@ -8,6 +8,7 @@
 ## 概述
 
 本项目实现了 **PhysX-Gaussian 系列**形变场变体，包括：
+
 1. **PhysX-Gaussian**: 纯 Anchor-based Spacetime Transformer（替代 HexPlane+MLP）
 2. **PhysX-Boosted**: HexPlane + Anchor 双分支融合（站在巨人肩膀上）
 3. **PhysX-Boosted V5-V9**: 多种融合策略的消融实验版本
@@ -23,6 +24,7 @@
 2. **KNN 绑定**: 每个高斯绑定到 `anchor_k` 个最近锚点（蒙皮权重）
 3. **时空 Transformer**: 锚点之间通过时间编码进行相互注意力
 4. **掩码建模**: 训练时随机掩码 `mask_ratio` 比例的锚点（BERT 风格）
+
 5. **插值**: 高斯位移 = 绑定锚点位移的加权和
 
 ---
@@ -63,7 +65,8 @@ PhysX-Gaussian is a new variant that replaces the HexPlane + MLP deformation fie
 5. **Interpolation**: Gaussian displacement = weighted sum of bound anchor displacements
 ```
 
-**训练命令**:
+#### PhysX-Gaussian 训练命令
+
 ```sh
 nohup /root/miniconda3/envs/x2_gaussian/bin/python train.py -s /root/autodl-tmp/4dctgs/x2-gaussian-main-origin/data/dir_4d_case2.pickle \
   --coarse_iter 5000 --iterations 30000 \
@@ -82,7 +85,7 @@ nohup /root/miniconda3/envs/x2_gaussian/bin/python train.py -s /root/autodl-tmp/
   > log/train_physx_gaussian_case2_$(date +%Y%m%d_%H%M%S).log 2>&1 &
 ```
 
-**参数表**:
+#### 参数表
 
 | 参数 | 默认值 | 描述 |
 |------|--------|------|
@@ -171,7 +174,7 @@ if stage == 'fine' and getattr(hyper, 'use_anchor_deformation', False) and gauss
 
 ---
 
-### 3. x2_gaussian/arguments/__init__.py
+### 3. x2_gaussian/arguments/**init**.py
 
 新增 PhysX-Gaussian 参数定义：
 
@@ -412,7 +415,7 @@ class AnchorDeformationNet(nn.Module):
     """
 ```
 
-**主要方法**:
+##### 主要方法
 
 | 方法 | 功能 |
 |------|------|
@@ -428,7 +431,8 @@ class AnchorDeformationNet(nn.Module):
 | `get_mlp_parameters()` | 返回 MLP 参数（兼容优化器） |
 | `get_grid_parameters()` | 返回 Transformer 参数 |
 
-**网络结构**:
+##### 网络结构
+
 - `anchor_embed`: 锚点位置嵌入 MLP
 - `time_encode`: 傅里叶时间编码
 - `input_proj`: 输入投影层
@@ -453,21 +457,25 @@ class AnchorDeformationNet(nn.Module):
 > 以下内容基于 `git diff HEAD` 核实，确保准确无遗漏。
 
 ### 1. 删除文件
+
 - `idea.md` - 旧的 idea 文档已删除 (156 行)
 
 ### 2. train.py 修改
 
-**新增注释**:
+#### 新增注释
+
 ```python
 # torch.autograd.set_detect_anomaly(True)  # DEBUG: Disabled - may cause issues
 ```
 
 **新增 `apply_physx_preset()` 函数** (第 27-48 行):
+
 - 打印 PhysX-Gaussian 配置信息
 - 显示锚点数量、KNN、mask_ratio、transformer 参数
 - 显示损失权重 λ_phys, λ_anchor_smooth
 
-**调用 preset**:
+#### 调用 preset
+
 ```python
 apply_physx_preset(opt, hyper)  # 在 apply_v7_preset 之后
 ```
@@ -484,7 +492,8 @@ apply_physx_preset(opt, hyper)  # 在 apply_v7_preset 之后
 | Jacobian reg | 使用 HexPlane 内部计算 |
 | Trajectory smoothing | 使用 HexPlane 内部计算 |
 
-**PhysX-Gaussian 损失计算**:
+#### PhysX-Gaussian 损失计算
+
 ```python
 if stage == 'fine' and use_anchor and gaussians.use_anchor_deformation:
     # L_phys (只在 warmup 后)
@@ -498,7 +507,8 @@ if stage == 'fine' and use_anchor and gaussians.use_anchor_deformation:
         loss["total"] = loss["total"] + lambda_anchor_smooth * L_anchor_smooth
 ```
 
-**PhysX-Gaussian 统计日志**:
+#### PhysX-Gaussian 统计日志
+
 ```python
 if "phys_completion" in loss:
     metrics['physx_L_phys'] = loss["phys_completion"].item()
@@ -508,12 +518,14 @@ if "anchor_smooth" in loss:
 
 ### 3. gaussian_model.py 修改
 
-**导入**:
+#### 导入
+
 ```python
 from x2_gaussian.gaussian.anchor_module import AnchorDeformationNet
 ```
 
-**新增属性初始化**:
+#### 新增属性初始化
+
 ```python
 self.use_anchor_deformation = getattr(args, 'use_anchor_deformation', False)
 self.num_anchors = getattr(args, 'num_anchors', 1024)
@@ -524,7 +536,8 @@ if self.use_anchor_deformation:
     self._deformation_anchor = AnchorDeformationNet(args)
 ```
 
-**`create_from_pcd()` 中初始化锚点**:
+#### `create_from_pcd()` 中初始化锚点
+
 ```python
 if self.use_anchor_deformation and self._deformation_anchor is not None:
     self._deformation_anchor = self._deformation_anchor.to("cuda")
@@ -532,21 +545,24 @@ if self.use_anchor_deformation and self._deformation_anchor is not None:
     self._deformation_anchor.update_knn_binding(fused_point_cloud)
 ```
 
-**`training_setup()` 添加优化器参数**:
+#### `training_setup()` 添加优化器参数
+
 ```python
 if self.use_anchor_deformation and self._deformation_anchor is not None:
     l.append({"params": list(self._deformation_anchor.get_mlp_parameters()), ...})
     l.append({"params": list(self._deformation_anchor.get_grid_parameters()), ...})
 ```
 
-**剪枝/密集化后更新 KNN**:
+#### 剪枝/密集化后更新 KNN
+
 ```python
 # prune_points() 和 densification_postfix() 中
 if self.use_anchor_deformation and self._deformation_anchor is not None:
     self._deformation_anchor.update_knn_binding(self._xyz)
 ```
 
-**新增 PhysX-Gaussian 方法**:
+#### 新增 PhysX-Gaussian 方法
+
 - `get_active_deformation_network()`
 - `compute_anchor_deformation(time, is_training)`
 - `compute_physics_completion_loss(time)`
@@ -555,16 +571,20 @@ if self.use_anchor_deformation and self._deformation_anchor is not None:
 - `save_anchor_deformation(path)`
 - `load_anchor_deformation(path)`
 
-**`get_deformed_centers()` 修改**:
+#### `get_deformed_centers()` 修改
+
 1. 添加 `is_training` 参数
 2. 使用 `.clone()` 避免 in-place 修改:
+
    ```python
    means3D = self.get_xyz.clone()
    density = self.get_density.clone()
    scales = self._scaling.clone()
    rotations = self._rotation.clone()
    ```
+
 3. PhysX-Gaussian 分支使用 `.contiguous()`:
+
    ```python
    if self.use_anchor_deformation and self._deformation_anchor is not None:
        means3D_deformed, scales_deformed, rotations_deformed = self._deformation_anchor(...)
@@ -572,7 +592,9 @@ if self.use_anchor_deformation and self._deformation_anchor is not None:
        scales_deformed = scales_deformed.contiguous()
        rotations_deformed = rotations_deformed.contiguous()
    ```
+
 4. PhysX-Gaussian 跳过 V7.2 校正:
+
    ```python
    if self.use_anchor_deformation:
        return means3D_deformed, scales_deformed, rotations_deformed
@@ -580,22 +602,26 @@ if self.use_anchor_deformation and self._deformation_anchor is not None:
 
 ### 4. render_query.py 修改
 
-**所有渲染函数添加 `.clone()`**:
+#### 所有渲染函数添加 `.clone()`
+
 - `query()`: `means3D = pc.get_xyz.clone()`, `density = pc.get_density.clone()`, `scales = pc._scaling.clone()`, `rotations = pc._rotation.clone()`
 - `render()`: 同上
 - `render_prior_oneT()`: 同上
 
-**统一使用 `get_deformed_centers()`**:
+#### 统一使用 `get_deformed_centers()`
+
 - `query()`: `pc.get_deformed_centers(time, ..., is_training=False)`
 - `render()`: `pc.get_deformed_centers(time, ..., is_training=True)`
 - `render_prior_oneT()`: `pc.get_deformed_centers(time, is_training=False)`
 
-**清理**:
+#### 清理
+
 - 移除 `render_prior_oneT()` 中的 `# breakpoint()` 注释
 
-### 5. arguments/__init__.py 修改
+### 5. arguments/**init**.py 修改
 
 **新增 PhysX-Gaussian 参数** (ModelHiddenParams 类):
+
 ```python
 # 架构参数
 self.use_anchor_deformation = False
@@ -617,6 +643,7 @@ self.phys_warmup_steps = 2000
 ### 6. README.md 修改
 
 新增 **PhysX-Gaussian** 章节:
+
 - 架构说明（FPS、KNN、Transformer、Masking）
 - 训练命令示例
 - 参数表格说明
@@ -626,6 +653,7 @@ self.phys_warmup_steps = 2000
 ## 当前状态
 
 ✅ **PhysX-Gaussian 完全可用**：
+
 - 使用 `.contiguous()` 确保 CUDA 兼容性
 - 梯度正常流经 anchor transformer 网络
 - L_phys 和 L_anchor_smooth 损失已启用
@@ -633,7 +661,7 @@ self.phys_warmup_steps = 2000
 
 ---
 
-# 2025-12-02 ~ 2025-12-04 更新
+## 2025-12-02 ~ 2025-12-04 更新
 
 ## PhysX-Boosted: 双分支融合架构
 
@@ -641,7 +669,7 @@ self.phys_warmup_steps = 2000
 
 **策略**: "站在巨人肩膀上，触及更高处"
 
-```
+```text
 Δμ_total = Δμ_hexplane(t) + Δμ_anchor(t)
 ```
 
@@ -650,7 +678,7 @@ self.phys_warmup_steps = 2000
 - HexPlane: "画皮肤"（高频纹理、微形变）
 - Anchor: "画骨架"（解剖结构、物理一致性）
 
-### 新增参数
+### Boosted 架构 新增参数
 
 ```python
 # x2_gaussian/arguments/__init__.py
@@ -662,14 +690,14 @@ self.disable_4d_tv = False  # 消融研究：禁用 L_4d_tv
 
 ## PhysX-Boosted V5: 可学习权重融合
 
-### 公式
+### V5 公式
 
-```
+```text
 Δx_total = (1 - α) · Δx_hexplane + α · Δx_anchor
 α = sigmoid(τ), τ 是可学习参数
 ```
 
-### 新增参数
+### V5 新增参数
 
 ```python
 self.use_learnable_balance = False  # 启用 V5
@@ -694,18 +722,19 @@ HexPlane (A) 是"基底"，Anchor (B) 学习残差
 
 - **Forward**: `Δx_total = Δx_hex + Δx_anchor`（直接相加）
 - **Backward**: 投影掉 Anchor 梯度沿 HexPlane 梯度方向的分量
-  ```
+
+  ```text
   grad_B_orth = grad_B - proj_{grad_A}(grad_B)
   ```
 
-### 新增参数
+### V6 新增参数
 
 ```python
 self.use_orthogonal_projection = False  # 启用 V6
 self.ortho_projection_strength = 1.0   # 投影强度
 ```
 
-### 实现
+### V6 实现
 
 ```python
 # anchor_module.py
@@ -724,22 +753,22 @@ class OrthogonalGradientProjection(torch.autograd.Function):
 
 ## PhysX-Boosted V7: 不确定性感知融合
 
-### 公式
+### V7 公式
 
 HexPlane 和 Anchor 都输出位移 + 不确定性 (log σ²)
 
-```
+```text
 w_A = 1/(σ_A² + ε), w_B = 1/(σ_B² + ε)
 Δx_final = (w_A·Δx_hex + w_B·Δx_anchor) / (w_A + w_B)
 ```
 
 ### Kendall 损失 (CVPR 2017)
 
-```
+```text
 L_total = L_render/(2Σ) + 0.5·log(Σ)  where Σ = σ_A² + σ_B²
 ```
 
-### 新增参数
+### V7 新增参数
 
 ```python
 self.use_uncertainty_fusion = False  # 启用 V7
@@ -757,7 +786,7 @@ self.uncertainty_init = 0.0  # 初始 log(σ²)
 - Anchor (A) 是"基底"，学习容易捕捉的模式
 - HexPlane (B) 被约束只学习残差（正交方向）
 
-### 新增参数
+### V8 新增参数
 
 ```python
 self.use_reverse_orthogonal_projection = False  # 启用 V8
@@ -808,17 +837,20 @@ else:
 ### 修复方案
 
 1. **initialize_anchors()**: 存储前 detach
+
    ```python
    indices = farthest_point_sampling(points.detach(), actual_num_anchors)
    self.anchor_positions = points[indices].detach().clone()
    ```
 
 2. **forward_anchors()**: 嵌入前 detach
+
    ```python
    anchor_pos = self.anchor_positions.detach()
    ```
 
 3. **update_knn_binding()**: 输入输出都 detach
+
    ```python
    knn_indices, knn_weights = compute_knn_weights(gaussian_positions.detach(), ...)
    self.knn_indices = knn_indices.detach()
@@ -826,6 +858,7 @@ else:
    ```
 
 4. **get_deformed_centers()**: 添加 `.contiguous()`
+
    ```python
    means3D_deformed = means3D_deformed.contiguous()
    ```
@@ -857,14 +890,16 @@ python tools/convert_stnf4d_to_x2gaussian.py \
 
 创建两种鲁棒性测试数据集：
 
-**方向1: 周期扰动（模拟不均匀呼吸）**
+#### 方向1: 周期扰动（模拟不均匀呼吸）
+
 ```bash
 python tools/create_robustness_datasets.py \
   --input data/dir_4d_case1.pickle \
   --phase_noise 0.15  # 15% 相位扰动
 ```
 
-**方向2: 稀疏视角**
+#### 方向2: 稀疏视角
+
 ```bash
 python tools/create_robustness_datasets.py \
   --input data/dir_4d_case1.pickle \
@@ -903,6 +938,7 @@ python tools/compare_metrics.py \
 ## 训练命令汇总
 
 ### Baseline
+
 ```bash
 nohup python train.py -s data/XCAT.pickle \
   --save_iterations 30000 50000 --save_checkpoint \
@@ -911,6 +947,7 @@ nohup python train.py -s data/XCAT.pickle \
 ```
 
 ### PhysX-Boosted V9 (α=0.99)
+
 ```bash
 nohup python train.py -s data/dir_4d_case1.pickle \
   --use_anchor_deformation --use_boosted \
@@ -921,6 +958,7 @@ nohup python train.py -s data/dir_4d_case1.pickle \
 ```
 
 ### 鲁棒性测试
+
 ```bash
 # 周期扰动 - PhysX-Boosted
 nohup python train.py -s data/dir_4d_case1_noise0.15.pickle \
@@ -955,19 +993,21 @@ nohup python train.py -s data/dir_4d_case1_sparse50.pickle \
 ## 当前实验状态
 
 ✅ **正在运行的实验**:
+
 - XCAT Baseline
 - S01 Baseline
 - XCAT PhysX-Boosted V9 (α=0.99)
 - S01 PhysX-Boosted V9 (α=0.99)
 
 ⏳ **待运行的实验**:
+
 - 周期扰动 Baseline vs PhysX-Boosted
 - 稀疏视角 Baseline vs PhysX-Boosted
 - 不同 α 值消融 (0.0, 0.5, 0.7, 0.9, 0.95, 0.99, 1.0)
 
 ---
 
-# 2025-12-05 ~ 2025-12-06 更新
+### 2025-12-05 ~ 2025-12-06 更新
 
 ## PhysX-Boosted V10-V16: 掩码建模策略演进
 
@@ -983,26 +1023,27 @@ nohup python train.py -s data/dir_4d_case1_sparse50.pickle \
 
 ## V10: 解耦掩码 (Decoupled Mask)
 
-### 设计思路
+### V10 设计思路
 
 将掩码建模与渲染**解耦**：
+
 - 渲染路径：使用完整的 `forward_anchors()` 输出
 - L_phys 路径：使用独立的 `forward_anchors_masked()` 输出
 
-```
+```text
 渲染: forward_anchors(t, mask=False) → dx_full → render() → L_render
                     ↓ detach
 L_phys: forward_anchors_masked(t) → dx_masked → L1(dx_masked[mask], dx_full[mask])
 ```
 
-### 参数
+### V10 参数
 
 ```python
 # x2_gaussian/arguments/__init__.py
 self.use_decoupled_mask = False  # 启用 V10
 ```
 
-### 实现位置
+### V10 实现位置
 
 | 文件 | 方法 | 说明 |
 |------|------|------|
@@ -1010,7 +1051,7 @@ self.use_decoupled_mask = False  # 启用 V10
 | `anchor_module.py` | `forward_anchors_masked()` | 专用于 L_phys 的掩码前向传播 |
 | `anchor_module.py` | `compute_physics_completion_loss()` | 计算 L_phys，只在被掩码的锚点上 |
 
-### 问题分析
+### V10 问题分析
 
 **失败原因**: L_phys 是"自我预测"任务——教师和学生都来自同一个网络。网络可能学会作弊（记忆），而不是学习真正的物理关系。
 
@@ -1018,18 +1059,19 @@ self.use_decoupled_mask = False  # 启用 V10
 
 ## V11: 预训练-微调 (Pretrain-Finetune)
 
-### 设计思路
+### V11 设计思路
 
 分两阶段训练：
+
 1. **预训练阶段** (前 N 步): 高掩码比例 (70%)，只用 L_phys
 2. **微调阶段** (N 步后): 低掩码比例或无掩码，加入 L_render
 
-```
+```text
 Stage 1 (Pretrain): mask_ratio=0.7, L = L_phys only
 Stage 2 (Finetune): mask_ratio=0.25, L = L_render + L_phys
 ```
 
-### 参数
+### V11 参数
 
 ```python
 self.use_pretrain_finetune = False  # 启用 V11
@@ -1037,7 +1079,7 @@ self.pretrain_steps = 5000          # 预训练步数
 self.pretrain_mask_ratio = 0.7     # 预训练阶段掩码比例
 ```
 
-### 实现位置
+### V11 实现位置
 
 | 文件 | 位置 | 说明 |
 |------|------|------|
@@ -1045,7 +1087,7 @@ self.pretrain_mask_ratio = 0.7     # 预训练阶段掩码比例
 | `anchor_module.py` | `forward_anchors()` | 根据阶段选择 mask_ratio |
 | `train.py` | `scene_reconstruction()` | 预训练阶段跳过 densification |
 
-### 问题分析
+### V11 问题分析
 
 **失败原因**: 预训练阶段没有外部监督（L_render），L_phys 仍然是自我预测。网络无法学到有意义的表示。
 
@@ -1053,11 +1095,11 @@ self.pretrain_mask_ratio = 0.7     # 预训练阶段掩码比例
 
 ## V12: 时间掩码 (Temporal Mask)
 
-### 设计思路
+### V12 设计思路
 
 掩码整个时间步，而不是空间锚点：
 
-```
+```text
 时间 t1: [a1, a2, a3, ..., aM] → 正常处理
 时间 t2: [MASK, MASK, MASK, ..., MASK] → 被掩码
 时间 t3: [a1, a2, a3, ..., aM] → 正常处理
@@ -1065,7 +1107,7 @@ self.pretrain_mask_ratio = 0.7     # 预训练阶段掩码比例
 
 模型需要从其他时间步的信息推断被掩码时间步的形变。
 
-### 参数
+### V12 参数
 
 ```python
 self.use_temporal_mask = False  # 启用 V12
@@ -1087,11 +1129,11 @@ self.temporal_mask_ratio = 0.2  # 时间步被掩码的概率
 
 ## V13: 一致性正则化 (Consistency Regularization)
 
-### 设计思路
+### V13 设计思路
 
 将掩码作为**数据增强**，而不是预测目标：
 
-```
+```text
 Teacher (无掩码): forward_anchors_unmasked(t) → dx_full (detach)
 Student (有掩码): forward_with_mask(t) → dx_masked
 Loss: L_consist = ||dx_masked - dx_full.detach()||
@@ -1101,14 +1143,14 @@ Loss: L_consist = ||dx_masked - dx_full.detach()||
 
 **关键区别**: 损失在**所有锚点**上计算，不仅仅是被掩码的锚点。
 
-### 参数
+### V13 参数
 
 ```python
 self.use_consistency_mask = False  # 启用 V13
 self.lambda_consist = 0.1         # L_consist 权重
 ```
 
-### 实现
+### V13 实现
 
 ```python
 # anchor_module.py: compute_consistency_loss()
@@ -1140,11 +1182,11 @@ def compute_consistency_loss(self, time_emb: torch.Tensor) -> torch.Tensor:
 
 ## V14/V15: 时间平滑 (Temporal Smoothness)
 
-### 设计思路
+### V14/V15 设计思路
 
 惩罚锚点运动的"加速度"：
 
-```
+```text
 dx(t-ε), dx(t), dx(t+ε)
 acceleration = dx(t+ε) - 2*dx(t) + dx(t-ε)  # 二阶差分
 L_temporal = ||acceleration||²
@@ -1152,7 +1194,7 @@ L_temporal = ||acceleration||²
 
 **物理意义**: 自然运动应该是平滑的（加速度接近零）。惩罚高加速度 = 鼓励线性运动。
 
-### 参数
+### V14/V15 参数
 
 ```python
 self.use_temporal_interp = False  # 启用 V14
@@ -1197,21 +1239,23 @@ python train.py ... --use_consistency_mask --lambda_consist 0.1 \
 
 ## V16: 拉格朗日时空掩码建模 (Lagrangian Spatio-Temporal Masked Modeling)
 
-### 核心创新
+### 核心创新 (V16)
 
-**V10-V15 的问题**:
+#### V10-V15 的问题
+
 1. 单时间步处理，无法建模时间关系
 2. [MASK] token **替换**原始 token，丢失位置信息
 3. 掩码建模是辅助损失 (λ=0.1)，不是主要目标
 
-**V16 解决方案**:
+#### V16 解决方案
+
 1. Token 是 (锚点, 时间) 对，Transformer 同时建模空间和时间
 2. mask_flag_embed 是**加性**嵌入，保留位置/时间信息
 3. L_lagbert 是主要目标 (λ=0.5)
 
 ### 架构
 
-```
+```text
 输入: anchor_pos [M, 3], t_center (e.g., 0.5)
 
 1. 采样时间窗口: t_vec = [t-Δ, t, t+Δ] = [0.4, 0.5, 0.6]  (K=3)
@@ -1246,7 +1290,7 @@ L_lagbert = L1(dx_masked[mask==1], dx_full[mask==1].detach())
 dx_center = dx_full[center_idx]  # [M, 3]
 ```
 
-### 参数
+### V16 参数
 
 ```python
 # 核心参数
@@ -1284,7 +1328,8 @@ if mask_flags is not None and self.use_spatiotemporal_mask:
     features_flat = features_flat + self.st_mask_embed_scale * mask_embed
 ```
 
-**与 BERT 的区别**:
+#### 与 BERT 的区别
+
 - BERT: `token[mask] = [MASK]` (替换，丢失位置信息)
 - V16: `token += mask_flag_embed(flag)` (加性，保留位置信息)
 
@@ -1332,6 +1377,7 @@ def forward_anchors_st(self, anchor_pos, t_vec, mask_flags=None):
 **问题**: 原实现中，渲染用 `forward_anchors()`，L_lagbert 用 `compute_lagbert_loss()`，是两次独立的前向传播。
 
 **解决方案**: 当 `st_coupled_render=True` 时：
+
 1. 渲染前先调用 `compute_lagbert_loss()`
 2. 缓存 `dx_center` 和 `L_lagbert`
 3. `forward_anchors()` 检测到缓存后直接返回
@@ -1362,7 +1408,7 @@ if _v16_lagbert_cached is not None:
     L_lagbert = _v16_lagbert_cached
 ```
 
-### 训练命令
+### V16 训练命令
 
 ```bash
 # V16 基础版
@@ -1401,9 +1447,9 @@ nohup python train.py ... \
 | `x2_gaussian/gaussian/gaussian_model.py` | 修改 | +40 | V13-V16 包装方法 |
 | `train.py` | 修改 | +30 | V13-V16 损失计算 |
 
-### 详细修改内容
+### 详细修改内容 (V10-V16)
 
-#### 1. arguments/__init__.py
+#### 1. arguments/**init**.py
 
 ```python
 # V10: 解耦掩码
@@ -1499,14 +1545,898 @@ if use_spatiotemporal_mask and lambda_lagbert > 0:
 
 ---
 
-## 当前实验状态
+## 当前实验状态 (V16)
 
 ✅ **V16 实验运行中**:
+
 - `dir_4d_case1_physx_boosted_v16` (λ_lagbert=0.1, window=1, mask=0.5)
 
 ⏳ **待运行的实验**:
+
 - V16 + Fix 1 (st_mask_embed_scale=0.1)
 - V16 + Fix 2 (st_coupled_render)
 - V16 + 两个 Fix
 - 不同 λ_lagbert 消融 (0.1, 0.2, 0.5)
 - 不同 st_window_size 消融 (1, 3, 5)
+
+---
+
+## PhysX-Boosted M1: Uncertainty-Gated Residual Fusion
+
+**日期**: 2025-12-11
+
+### 设计思想
+
+M1 是一个重大的模型结构升级，将原来固定标量 α≈0.99 的线性融合改成**基于不确定性的自适应门控融合**。
+
+#### 论文记号
+
+- **Φ_L(x,t)**: 拉格朗日场（Anchor-based Transformer）- 捕获骨架运动
+- **Φ_E(x,t)**: 欧拉场（HexPlane）- 捕获高频残差细节
+- **s_E(x,t)**: 欧拉场的对数方差输出 = log(σ_E²)
+- **β(x,t)**: 自适应门控系数，取决于欧拉场的不确定性
+
+#### 融合公式
+
+##### V5 (固定 α)
+
+```text
+Φ(x,t) = (1 - α) · Φ_E(x,t) + α · Φ_L(x,t)
+```
+
+##### M1 (不确定性门控残差)
+
+```text
+Φ(x,t) = Φ_L(x,t) + β(x,t) · Φ_E(x,t)
+```
+
+设计哲学：
+
+- 拉格朗日是"骨架"（始终贡献）
+- 欧拉是"残差校正器"（只有在有信心时才贡献）
+- 高 σ_E（不确定）→ 低 β → 更信任拉格朗日
+- 低 σ_E（有信心）→ 高 β → 欧拉贡献更多
+
+#### β(x,t) 计算方式
+
+**Bayes 模式**（基于逆方差加权）:
+
+```text
+β = σ_L² / (σ_L² + σ_E²(x,t))
+σ_E² = exp(s_E)
+```
+
+其中 σ_L² 是常数超参数（如 1e-4）
+
+##### Sigmoid 模式
+
+```text
+β = sigmoid((τ - s_E(x,t)) / λ)
+```
+
+其中 τ 是阈值，λ 是温度
+
+#### 稀疏正则 L_gate
+
+为了鼓励"能用拉格朗日解释的尽量用拉格朗日"：
+
+```text
+L_gate = E_{x,t}[|β(x,t)|_1]
+```
+
+### M1 新增参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--fusion_mode` | `fixed_alpha` | 融合模式：`fixed_alpha` 或 `uncertainty_gated` |
+| `--gate_mode` | `bayes` | 门控模式：`bayes` 或 `sigmoid` |
+| `--sigma_L2` | `1e-4` | Bayes 模式下的拉格朗日方差常数 |
+| `--gate_tau` | `0.0` | Sigmoid 模式下的阈值 τ |
+| `--gate_lambda` | `1.0` | Sigmoid 模式下的温度 λ |
+| `--beta_min` | `0.0` | β 最小值 |
+| `--beta_max` | `1.0` | β 最大值 |
+| `--m1_lambda_gate` | `0.0` | L_gate 稀疏正则权重 |
+| `--eulerian_uncertainty_hidden_dim` | `32` | 不确定性头隐藏层维度 |
+| `--eulerian_s_E_init` | `0.0` | s_E 输出的初始值 |
+
+### M1 修改的文件
+
+| 文件 | 修改内容 |
+|------|----------|
+| `x2_gaussian/arguments/__init__.py` | 新增 M1 参数 |
+| `x2_gaussian/gaussian/deformation.py` | 新增 uncertainty_head，输出 s_E |
+| `x2_gaussian/gaussian/anchor_module.py` | 新增 M1 融合逻辑，β 计算，L_gate 计算 |
+| `train.py` | 新增 L_gate 损失，M1 统计日志 |
+| `scripts/visualize_beta.py` | **新建** 可视化脚本 |
+| `README.md` | 新增 M1 训练命令 |
+| `CHANGELOG_physx_gaussian.md` | 新增 M1 变更日志 |
+
+### 核心代码变更
+
+#### 1. deformation.py - Eulerian 不确定性输出
+
+```python
+# 在 create_net() 中新增
+self.uncertainty_head = nn.Sequential(
+    nn.ReLU(),
+    nn.Linear(self.W, eulerian_uncertainty_hidden),
+    nn.ReLU(),
+    nn.Linear(eulerian_uncertainty_hidden, 1)  # Output: s_E = log(σ²)
+)
+
+# 在 forward_dynamic() 中计算 s_E
+if self.fusion_mode == 'uncertainty_gated':
+    self._last_s_E = self.uncertainty_head(hidden)  # [N, 1]
+```
+
+#### 2. anchor_module.py - M1 融合
+
+```python
+# 在 forward() 中的 fusion 分支
+elif self.fusion_mode == 'uncertainty_gated':
+    # 获取 s_E
+    s_E = self.original_deformation.get_last_s_E()  # [N, 1]
+    
+    # 计算 β
+    if self.gate_mode == 'bayes':
+        sigma2_E = torch.exp(s_E)
+        beta = self.sigma_L2 / (self.sigma_L2 + sigma2_E + 1e-8)
+    else:  # sigmoid
+        beta = torch.sigmoid((self.gate_tau - s_E) / (self.gate_lambda + 1e-8))
+    
+    beta = beta.clamp(min=self.beta_min, max=self.beta_max)
+    
+    # M1 融合公式: Φ = Φ_L + β · Φ_E
+    dx_combined = dx_anchor + beta * dx_hex
+```
+
+#### 3. train.py - L_gate 损失
+
+```python
+# M1: Uncertainty-Gated Residual Fusion
+fusion_mode = getattr(hyper, 'fusion_mode', 'fixed_alpha')
+lambda_gate = getattr(hyper, 'lambda_gate', 0.0)
+if fusion_mode == 'uncertainty_gated' and gaussians._deformation_anchor is not None:
+    if lambda_gate > 0:
+        L_gate = gaussians._deformation_anchor.compute_gate_sparsity_loss()
+        loss["gate_sparsity"] = L_gate
+        loss["total"] = loss["total"] + lambda_gate * L_gate
+    
+    # Log M1 statistics
+    m1_stats = gaussians._deformation_anchor.get_m1_statistics()
+    if m1_stats.get('beta_mean') is not None:
+        loss["m1_beta_mean"] = m1_stats['beta_mean']
+```
+
+### 可视化工具
+
+新增 `scripts/visualize_beta.py`：
+
+```bash
+# 生成 β(x,t) 贡献图
+python scripts/visualize_beta.py \
+    --checkpoint path/to/ckpt \
+    --time 0.5 \
+    --output output/m1_viz
+
+# 输出:
+#   - beta_slice_t0.50.png: β 的2D切片可视化
+#   - beta_stats_t0.50.png: β 和 s_E 的统计分布
+#   - beta_volume_t0.50.npz: 体素化的 β 数据
+```
+
+### 训练命令示例
+
+```bash
+# M1-Bayes
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --mask_ratio 0.0 \
+  --fusion_mode uncertainty_gated \
+  --gate_mode bayes --sigma_L2 1e-4 \
+  --m1_lambda_gate 1e-4 \
+  --iterations 50000 \
+  > log/train_m1_bayes_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# M1-Sigmoid
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --mask_ratio 0.0 \
+  --fusion_mode uncertainty_gated \
+  --gate_mode sigmoid --gate_tau 0.0 --gate_lambda 1.0 \
+  --m1_lambda_gate 1e-4 \
+  --iterations 50000 \
+  > log/train_m1_sigmoid_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### 向后兼容性
+
+- 当 `fusion_mode="fixed_alpha"` 时，行为与 V5 完全一致
+- 所有原有参数和实验仍然有效
+
+### 待验证实验
+
+- [ ] M1-Bayes vs V5 baseline
+- [ ] M1-Sigmoid vs V5 baseline  
+- [ ] 不同 σ_L² 消融 (0.1, 1.0, 10.0)
+- [ ] 不同 m1_lambda_gate 消融 (0, 1e-4, 1e-3)
+- [ ] β 均值是否在合理范围 (0.3 ~ 0.7)
+
+---
+
+## M1 Bug 修复 (2025-12-11)
+
+### Bug 1: 融合公式错误
+
+**问题**: 原公式将两个预测完整位移的分支直接相加，导致过冲。
+
+```python
+# 错误 (导致位移过冲):
+dx_combined = dx_anchor + beta * dx_hex
+
+# 正确 (加权平均):
+dx_combined = (1 - beta) * dx_anchor + beta * dx_hex
+```
+
+**影响**: M1-Sigmoid PSNR 下降 0.4 dB，M1-Bayes PSNR 下降 4.6 dB
+
+### Bug 2: σ_L² 默认值过小
+
+**问题**: σ_L² = 1e-4 导致 β ≈ 0.0001，Eulerian 贡献被完全压制。
+
+```python
+# 错误:
+self.sigma_L2 = 1e-4  # β = 1e-4 / (1e-4 + 1) ≈ 0.0001
+
+# 正确:
+self.sigma_L2 = 1.0   # β = 1.0 / (1.0 + 1) = 0.5
+```
+
+#### 修复后行为
+
+- β 初始值 ≈ 0.5（当 s_E = 0）
+- 网络可以学习调整 s_E 来控制 β
+- σ_L² 越小 → β 越小 → 越信任 Lagrangian
+
+### Bug 3: ds_anchor/dr_anchor 未定义
+
+**问题**: 尝试对 Anchor 不存在的 scale/rotation 输出进行融合。
+
+```python
+# 错误 (ds_anchor 不存在):
+ds_combined = (1 - beta) * ds_anchor + beta * ds_hex
+
+# 正确 (Anchor 只预测位置):
+ds_combined = beta * ds_hex  # Scale 只来自 HexPlane
+dr_combined = beta * dr_hex  # Rotation 只来自 HexPlane
+```
+
+### Bug 4: 参数未从 V5 学习
+
+**问题**: σ_L²=1.0 导致 β=0.5，与 V5 最优 α=0.99 差异太大。
+
+```python
+# 从 V5 学习: α=0.99 最优 → HexPlane 权重 = 0.01
+# 在 M1 中: β = HexPlane 权重
+# 目标: β ≈ 0.01 当 s_E=0
+
+# Bayes: β = σ_L² / (σ_L² + 1) = 0.01 → σ_L² ≈ 0.01
+self.sigma_L2 = 0.01  # 而不是 1.0
+
+# Sigmoid: sigmoid(τ/λ) = 0.01 → τ ≈ -4.6 (λ=1)
+self.gate_tau = -4.6  # 而不是 0.0
+```
+
+### 修正后的公式解释
+
+```text
+Φ(x,t) = (1 - β) · Φ_L + β · Φ_E   [位置]
+ds = β · ds_hex                     [Scale - 只来自 HexPlane]
+dr = β · dr_hex                     [Rotation - 只来自 HexPlane]
+
+其中:
+- β = σ_L² / (σ_L² + exp(s_E))  [Bayes, σ_L²=0.01 → β≈0.01]
+- β = sigmoid((τ - s_E) / λ)    [Sigmoid, τ=-4.6 → β≈0.01]
+
+设计理念 (从 V5 α=0.99 学习):
+- 初始时 β ≈ 0.01，行为类似 V5
+- 网络可以学习 s_E，在 HexPlane 有信心的区域增加 β
+- 实现"自适应"的融合而不是固定的 α=0.99
+```
+
+## 结果对比
+
+| Model | PSNR3D | vs V5 |
+|-------|--------|-------|
+| **V5 baseline (α=0.99)** | **45.117** | — |
+| M1-Sigmoid v3 | 45.119 | +0.002 |
+| M1.1-Sigmoid | 44.316 | **-0.801** ❌ |
+
+## M1.1 失败原因分析
+
+### 梯度解耦破坏了 V5 的训练动态
+
+- V5: HexPlane 贡献 1%，获得 1% 梯度 → **平衡**
+- M1.1: HexPlane 贡献 1-3%，获得 100% 梯度 → **失衡**
+
+这种失衡导致 HexPlane 过度训练，学习了过大的位移预测。
+
+## M1.2 设计：V5 基础上的微小扰动
+
+**核心思想**：保持 V5 的 99:1 梯度流，只在此基础上做**微小**的不确定性调整。
+
+```text
+# V5 公式 (保持不变)
+dx_v5 = 0.99 * dx_anchor + 0.01 * dx_hex
+
+# M1.2: 添加微小扰动 γ
+dx_m1.2 = (0.99 - γ) * dx_anchor + (0.01 + γ) * dx_hex
+
+其中 |γ| ≤ 0.005 (最多 ±0.5% 调整)
+```
+
+### γ 基于不确定性计算
+
+- s_E 高 (不确定) → γ < 0 → 减少 HexPlane (从1%降到0.5%)
+- s_E 低 (确定) → γ > 0 → 增加 HexPlane (从1%升到1.5%)
+
+添加 `gamma_max` 参数：
+
+更新打印语句：
+
+修复 M1.2 代码，移除旧的 beta 计算逻辑：
+
+更新 train.py 中的日志代码：
+
+运行快速测试验证 M1.2：
+
+M1.2 测试结果：
+
+- **hex_weight=0.015 (γ=+0.005)** - 达到最大值，说明网络想要更多 HexPlane
+- **s_E_mean=-6.97** - 非常确定，γ 被推到最大
+
+γ 达到上限，说明可能需要更大的 `gamma_max`。让我调整参数并提供训练命令：
+
+---
+
+## M1.2 训练命令
+
+基于测试结果，γ 达到上限说明网络想要更多 HexPlane 贡献。提供两个版本测试：
+
+```bash
+# M1.2 v1: γ_max=0.005 (HexPlane 权重范围: 0.5% ~ 1.5%)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --fusion_mode uncertainty_gated \
+  --gate_tau 0.0 --gate_lambda 1.0 \
+  --gamma_max 0.005 \
+  --m1_lambda_gate 0 \
+  --iterations 50000 --test_iterations 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname dir_4d_case1_physx_boosted_m1_2_g005 \
+  > log/train_physx_boosted_m1_2_g005_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# M1.2 v2: γ_max=0.01 (HexPlane 权重范围: 0% ~ 2%)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --fusion_mode uncertainty_gated \
+  --gate_tau 0.0 --gate_lambda 1.0 \
+  --gamma_max 0.01 \
+  --m1_lambda_gate 0 \
+  --iterations 50000 --test_iterations 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname dir_4d_case1_physx_boosted_m1_2_g01 \
+  > log/train_physx_boosted_m1_2_g01_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+## M1.2 设计总结
+
+| 版本 | 设计 | 问题 |
+|------|------|------|
+| M1.0/v3 | β从s_E计算，范围0-1 | β固定在0.01，无自适应 |
+| M1.1 | 梯度解耦 | 破坏V5训练动态，-0.8dB |
+| **M1.2** | V5基础+微小γ扰动 | **保持99:1梯度流** |
+
+**M1.2 核心公式**：
+
+```text
+dx = (0.99 - γ) * dx_anchor + (0.01 + γ) * dx_hex
+γ = γ_max * tanh((τ - s_E) / λ)
+
+γ_max=0.005时: HexPlane 权重 ∈ [0.5%, 1.5%]
+γ_max=0.01时:  HexPlane 权重 ∈ [0%, 2%]
+```
+
+**预期**：M1.2 保持 V5 的训练动态，同时允许基于不确定性的微调，应该能够匹配或略微超越 V5。
+
+---
+
+## M2: Bounded Learnable Perturbation (ICML formulation)
+
+**日期**: 2025-12-12
+
+### M2 设计动机
+
+从 M1 实验中学到:
+
+- M1.0/v3: β 固定在 0.01，无自适应（本质上就是 V5）
+- M1.1: 梯度解耦破坏了 V5 的训练动态，性能下降 0.8 dB
+- M1.2: 在 V5 基础上做微小扰动，但仍受限于加权平均公式
+
+M2 采用更优雅的 ICML 风格公式：**Base + Bounded Perturbation**
+
+### M2 核心公式
+
+```text
+Φ(x,t) = Φ_L(x,t) + ε · tanh(Φ_E(x,t))
+
+其中:
+- Φ_L: Lagrangian (Anchor) - 完整结构基底 (100%)
+- Φ_E: Eulerian (HexPlane) - 有界可学习微扰
+- ε = ε_max · sigmoid(ρ), ρ 是可学习标量
+- tanh 约束微扰幅度，防止 shortcut learning
+```
+
+### 与 V5 的关系
+
+```text
+V5:  dx = 0.01·dx_hex + 0.99·dx_anchor  [固定加权平均]
+M2:  dx = dx_anchor + ε·tanh(dx_hex)    [基底 + 有界微扰]
+
+M2 更优雅因为:
+1. 结构-微扰分离明确（Base + Perturbation）
+2. Lagrangian 是完整基底，不是 99%
+3. ε 有界（sigmoid）防止 shortcut
+4. tanh 约束微扰幅度，保证数值稳定
+```
+
+### 初始化匹配 V5
+
+```python
+# ε_init = 0.01 复现 V5 α=0.99 的经验优势
+# ρ_init = logit(ε_init / ε_max)
+eps_ratio = min(max(self.eps_init / self.eps_max, 1e-6), 1 - 1e-6)
+rho_init = math.log(eps_ratio / (1 - eps_ratio))  # logit
+self.rho = nn.Parameter(torch.tensor(rho_init, dtype=torch.float32))
+```
+
+### M2 新增参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `fusion_mode` | `"fixed_alpha"` | 设为 `"bounded_perturb"` 启用 M2 |
+| `eps_max` | `0.02` | ε 的上界 (2%) |
+| `eps_init` | `0.01` | ε 的初始值 (1%, 匹配 V5) |
+| `use_tanh` | `True` | 是否使用 tanh 约束微扰 |
+
+### 修改的文件
+
+| 文件 | 修改内容 |
+|------|---------|
+| `anchor_module.py` | M2 参数初始化、bounded_perturb fusion 模式、getter 方法 |
+| `arguments/__init__.py` | M2 config 参数 |
+| `train.py` | M2 日志记录 |
+| `README.md` | M2 文档和训练命令 |
+
+### M2 核心代码
+
+```python
+elif self.fusion_mode == 'bounded_perturb':
+    # Compute ε = ε_max * sigmoid(ρ)
+    eps = self.eps_max * torch.sigmoid(self.rho)
+    self._last_eps = eps.item()  # Cache for logging
+    
+    # Apply H(·) = tanh(·) to bound perturbation magnitude
+    if self.use_tanh:
+        dx_perturb = torch.tanh(dx_hex)
+        ds_perturb = torch.tanh(ds_hex)
+        dr_perturb = torch.tanh(dr_hex)
+    else:
+        dx_perturb = dx_hex
+        ds_perturb = ds_hex
+        dr_perturb = dr_hex
+    
+    # M2 Fusion: Base (Lagrangian) + Bounded Perturbation (Eulerian)
+    dx_combined = dx_anchor + eps * dx_perturb
+    ds_combined = eps * ds_perturb
+    dr_combined = eps * dr_perturb
+```
+
+### M2 训练命令
+
+```bash
+# M2 (bounded_perturb)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --fusion_mode bounded_perturb \
+  --eps_max 0.02 --eps_init 0.01 \
+  --iterations 50000 --test_iterations 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname dir_4d_case1_physx_boosted_m2 \
+  > log/train_physx_boosted_m2_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### ICML 叙事优势
+
+> M2 将 V5 的经验性发现（α=0.99 最优）提升为更优雅的数学表述：
+> Lagrangian 场作为**完整结构基底**，Eulerian 场作为**有界可学习微扰**。
+> 初始化 ε≈0.01 复现 V5 的经验优势，同时 ε 的端到端学习允许模型
+> 自动发现最优的 Eulerian 贡献比例。这是一种"先验引导的自适应"。
+
+---
+
+## M1.3 & M2.05: 基于实验分析的改进
+
+**日期**: 2025-12-12
+
+### 实验结果回顾
+
+| 模型 | 50K PSNR3D | Δ vs V5 NoMask |
+|------|------------|----------------|
+| V5 NoMask (α=0.99) | 45.001 | baseline |
+| **M1.2 g005** | **45.298** | **+0.297 dB ✓** |
+| M1.2 g01 | 45.001 | 0 |
+| **M2** | **39.486** | **-5.515 dB ✗** |
+
+### M1.2 g005 成功原因
+
+```text
+观察:
+- hex_weight = 0.0150 (γ = +0.005, 达到最大值)
+- s_E_mean: -5.7 → -3.5 (不确定性降低)
+
+关键洞察:
+1. 保持 V5 的加权平均公式结构
+2. HexPlane 权重从 1% 增加到 1.5% 提升了性能
+3. V5 的 α=0.99 不是最优，α=0.985 更好
+```
+
+### M2 失败原因
+
+```text
+观察:
+- ε = 0.010000 (恒定), ρ = 0.0000 (从未学习)
+
+致命问题:
+1. 公式 dx = dx_anchor + ε·tanh(dx_hex) 与 V5 结构不同
+2. Anchor 得到 100% 权重而非 99%
+3. tanh 压缩了 HexPlane 信号
+4. ε 没有学习（可能未加入优化器）
+```
+
+### M1.3: 基于 M1.2 发现的优化
+
+**M1.3a**: 固定 α=0.985 (hex=1.5%)
+
+```bash
+--balance_alpha_init 0.985 --balance_lr 0
+```
+
+**M1.3b**: 可学习 α，从 0.985 开始
+
+```bash
+--balance_alpha_init 0.985 --balance_lr 0.0001
+```
+
+### M2.05: 修复公式结构
+
+#### 问题修复
+
+1. 恢复加权平均结构: `dx = (1-ε)·dx_anchor + ε·dx_hex`
+2. 移除 tanh（它压缩了信号）
+3. ε_init = 0.015（基于 M1.2 发现）
+
+#### M2.05 核心代码
+
+```python
+# M2.05: Weighted average (same structure as V5!)
+eps = self.eps_max * torch.sigmoid(self.rho)
+alpha = 1.0 - eps
+
+dx_combined = alpha * dx_anchor + eps * dx_hex
+ds_combined = eps * ds_hex
+dr_combined = eps * dr_hex
+```
+
+### 训练命令
+
+```bash
+# M1.3a: Fixed α=0.985
+python train.py ... --balance_alpha_init 0.985 --balance_lr 0
+
+# M1.3b: Learnable α from 0.985
+python train.py ... --balance_alpha_init 0.985 --balance_lr 0.0001
+
+# M2.05: Learnable weighted average
+python train.py ... --fusion_mode bounded_perturb --eps_max 0.03 --eps_init 0.015
+```
+
+---
+
+## M2.1: Trust-Region Schedule
+
+**日期**: 2025-12-12
+
+### M2.1 设计动机
+
+M2 的 ρ 从第一步就开始学习，可能导致优化器"走捷径"。M2.1 引入 trust-region schedule 强制模型先在 Lagrangian manifold 收敛。
+
+### 两种模式
+
+**freeze_rho** (硬冻结):
+
+- 前 N 步完全冻结 ρ，不更新梯度
+- ε 维持在 eps_init 附近
+
+**warmup_cap** (软约束):
+
+- ε_eff = min(ε_raw, ε_max * step/warmup_steps)
+- 逐步放开 residual 容量
+
+### M2.1 新增参数
+
+```python
+schedule_mode = "freeze_rho"  # ["none", "freeze_rho", "warmup_cap"]
+freeze_steps = 2000           # For freeze_rho
+warmup_steps = 5000           # For warmup_cap
+```
+
+### M2.1 训练命令
+
+```bash
+# M2.1-a: freeze_rho
+--fusion_mode bounded_perturb --schedule_mode freeze_rho --freeze_steps 2000
+
+# M2.1-b: warmup_cap  
+--fusion_mode bounded_perturb --schedule_mode warmup_cap --warmup_steps 5000
+```
+
+---
+
+## M2.2: Residual Normalization
+
+**日期**: 2025-12-13
+
+### M2.2 设计动机
+
+> "Residual normalization makes ε a true trust-region radius by preventing magnitude leakage from the Eulerian stream."
+
+M2/M2.1 中 tanh 可能无法完全控制 residual 幅值，导致 ε_eff 不能真正代表"微扰半径"。M2.2 引入更强的归一化方式。
+
+### 三种 H(Δ) 模式
+
+| 模式 | 公式 | 特点 |
+|------|------|------|
+| **tanh** | H(Δ) = tanh(Δ) | M2/M2.1 baseline，[-1,1] 约束 |
+| **rmsnorm** | H(Δ) = Δ / rms(Δ) | RMS 归一化，幅值 O(1) |
+| **unitnorm** | H(Δ) = Δ / ‖Δ‖ | L2 单位化，ε 精确控制半径 |
+
+### M2.2 新增参数
+
+```python
+residual_mode = "tanh"  # ["tanh", "rmsnorm", "unitnorm"]
+norm_eps = 1e-6         # Numerical stability
+```
+
+### M2.2 Logging 新增
+
+- `mean_norm_E`: ‖Δ‖ 均值（归一化前）
+- `mean_norm_H`: ‖H(Δ)‖ 均值（归一化后）
+
+### M2.2 训练命令
+
+```bash
+# M2.2-a: rmsnorm (推荐)
+--fusion_mode bounded_perturb --schedule_mode freeze_rho \
+--residual_mode rmsnorm --norm_eps 1e-6
+
+# M2.2-b: unitnorm
+--fusion_mode bounded_perturb --schedule_mode freeze_rho \
+--residual_mode unitnorm --norm_eps 1e-6
+```
+
+#### M2.2a: rmsnorm + freeze_rho (FIXED eps)
+
+nohup /root/miniconda3/envs/x2_gaussian/bin/python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --fusion_mode bounded_perturb \
+  --schedule_mode freeze_rho --freeze_steps 2000 \
+  --eps_max 0.03 --eps_init 0.015 \
+  --residual_mode rmsnorm --norm_eps 1e-6 \
+  --iterations 50000 --test_iterations 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname dir_4d_case1_physx_boosted_m2_2a_rmsnorm_v2 \
+  > log/train_physx_boosted_m2_2a_rmsnorm_v2_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+#### M2.2b: unitnorm + freeze_rho (FIXED eps)
+
+nohup /root/miniconda3/envs/x2_gaussian/bin/python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --fusion_mode bounded_perturb \
+  --schedule_mode freeze_rho --freeze_steps 2000 \
+  --eps_max 0.03 --eps_init 0.015 \
+  --residual_mode unitnorm --norm_eps 1e-6 \
+  --iterations 50000 --test_iterations 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname dir_4d_case1_physx_boosted_m2_2b_unitnorm_v2 \
+  > log/train_physx_boosted_m2_2b_unitnorm_v2_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+---
+
+## M3: Low-Frequency Leakage Penalty
+
+**日期**: 2025-12-13
+
+### M3 设计动机
+
+> "Low-frequency leakage regularization prevents the Eulerian stream from explaining global motion, reserving it for high-frequency corrective details around the Lagrangian manifold."
+
+问题：Eulerian stream 可能"偷学"低频/大尺度运动，绕过 ε 的约束。
+解决：直接惩罚 residual 的低频分量，逼迫它只补高频细节。
+
+### M3 核心公式
+
+```text
+L_LP = mean_i || LP(Δ_i) ||^2
+```
+
+其中 LP(·) 是低通算子：
+
+- 若 Δ 在邻域内变化缓慢（低频）→ LP(Δ) 大 → 被惩罚
+- 若 Δ 是局部高频修正 → LP(Δ) ≈ 0 → 不惩罚
+
+### 两种 LP 模式
+
+| 模式 | 公式 | 特点 |
+|------|------|------|
+| **knn_mean** | LP(Δ_i) = mean_{j∈N_k(i)} Δ_j | 惩罚局部均值，推荐 |
+| **graph_laplacian** | LP(Δ_i) = Δ_i - mean_{j∈N(i)} Δ_j | 图拉普拉斯，更理论 |
+
+### M3 新增参数
+
+```python
+lp_enable = False       # Master switch
+lambda_lp = 0.01        # L_LP weight
+lp_mode = "knn_mean"    # ["knn_mean", "graph_laplacian"]
+lp_k = 8                # Number of neighbors
+lp_subsample = 2048     # Subsample for efficiency
+```
+
+### M3 Logging 新增
+
+- `m3_lp_loss`: L_LP 值
+- `m3_lp_mean`: mean ||LP(Δ)||
+- `m3_lp_ratio`: ||LP(Δ)|| / ||Δ|| (越小说明高频占比越高)
+
+### M3 训练命令
+
+```bash
+# M3: LP regularization with kNN mean
+--fusion_mode bounded_perturb --schedule_mode freeze_rho \
+--lp_enable --lambda_lp 0.01 --lp_mode knn_mean --lp_k 8
+
+# M3: LP regularization with graph Laplacian
+--fusion_mode bounded_perturb --schedule_mode freeze_rho \
+--lp_enable --lambda_lp 0.01 --lp_mode graph_laplacian --lp_k 8
+```
+
+---
+
+## M4: Subspace Decoupling Regularization
+
+**日期**: 2025-12-13
+
+### M4 设计动机
+
+> "Subspace decoupling regularization discourages the Eulerian residual from aligning with the Lagrangian deformation responses, forcing it to model complementary details rather than shortcuts."
+
+问题：Eulerian 可能学到与 Lagrangian 相同方向的变形（shortcut），导致两个分支冗余而非互补。
+解决：惩罚两个分支的"导数信息"（速度或 Jacobian）之间的余弦相似度，强制它们解耦。
+
+### M4 核心公式
+
+```text
+L_decouple = mean_i(cos²(v_L, v_E))  # velocity_corr
+L_decouple = mean_i(cos²(g_L, g_E))  # stochastic_jacobian_corr
+```
+
+### 两种 decouple 模式
+
+| 模式 | 公式 | 特点 |
+|------|------|------|
+| **velocity_corr** | v = deform(x, t+dt) - deform(x, t) | 比较时间导数，便宜稳定 |
+| **stochastic_jacobian_corr** | g = grad(dot(deform, w), x) | 比较空间 Jacobian，更理论 |
+
+### M4 新增参数
+
+```python
+decouple_enable = False           # Master switch
+lambda_decouple = 0.01            # L_decouple weight
+decouple_mode = "velocity_corr"   # ["velocity_corr", "stochastic_jacobian_corr"]
+decouple_subsample = 2048         # Subsample for efficiency
+decouple_stopgrad_L = True        # Detach Lagrangian (only train Eulerian)
+
+# velocity_corr specific
+decouple_dt = 0.02                # Time step for velocity
+
+# stochastic_jacobian_corr specific
+decouple_num_dirs = 1             # Number of random directions
+```
+
+### Logging 新增
+
+- `m4_decouple_loss`: L_decouple 值
+- `m4_corr_mean`: mean |cos(v_L, v_E)| 或 |cos(g_L, g_E)|
+- `m4_grad_L_norm`, `m4_grad_E_norm`: Jacobian 模式下的梯度范数
+
+### M4 训练命令
+
+```bash
+# M4: velocity correlation decoupling
+--fusion_mode bounded_perturb --schedule_mode freeze_rho \
+--decouple_enable --lambda_decouple 0.01 --decouple_mode velocity_corr
+
+# M4: stochastic Jacobian decoupling
+--fusion_mode bounded_perturb --schedule_mode freeze_rho \
+--decouple_enable --lambda_decouple 0.01 --decouple_mode stochastic_jacobian_corr
+```
+
+### Bug 修复记录 (2025-12-13)
+
+1. **Bug #1**: `NameError: name 'means3D' is not defined`
+   - **位置**: `anchor_module.py` forward() 中的 M3/M4 缓存代码
+   - **原因**: 使用了错误的变量名 `means3D` 和 `times`
+   - **修复**: 改为正确的 `gaussian_positions` 和 `time_emb`
+
+2. **Bug #2**: `AttributeError: 'AnchorDeformationNet' object has no attribute 'anchors_initialized'`
+   - **位置**: `anchor_module.py` `_get_anchor_deformation()` 方法
+   - **原因**: 使用了不存在的属性名 `anchors_initialized`
+   - **修复**: 改为正确的 `initialized`
+
+3. **Bug #3**: `ValueError: too many values to unpack (expected 3)`
+   - **位置**: `anchor_module.py` `_get_anchor_deformation()` 方法
+   - **原因**: `forward_anchors()` 返回单个 tensor，不是 tuple
+   - **修复**: `anchor_dx, _, _ = self.forward_anchors(times)` → `anchor_dx = self.forward_anchors(times, is_training=False)`
+
+4. **Bug #4**: `AttributeError: 'NoneType' object has no attribute 'unsqueeze'`
+   - **位置**: `anchor_module.py` `_get_eulerian_deformation()` 方法
+   - **原因**: HexPlane deformation 需要 scales, rotations, density 参数
+   - **修复**: 创建 dummy tensors 传递给 HexPlane forward
+
+5. **Bug #5**: `RuntimeError: derivative for aten::grid_sampler_2d_backward is not implemented`
+   - **位置**: `anchor_module.py` `_compute_jacobian_corr_loss()` 方法
+   - **原因**: Jacobian 模式使用 autograd 计算二阶导数，但 grid_sampler_2d 不支持
+   - **修复**: 改用空间有限差分代替 autograd 计算 Jacobian 方向导数
+
+### 配置修复 (2025-12-13)
+
+**问题**: M2 best_baseline 和 M3/M4 实验使用了错误的 `bounded_perturb` + `residual_mode tanh` 配置，导致 ||Δ|| 爆炸 (0.37→2.12) 和 psnr3d 下降 (40.5→38.6)。
+
+**修复**: 所有 M3/M4 实验现在继承 M2.1 最佳配置 (m2_1a_freeze_v2: psnr3d 45.325, ssim3d 0.980):
+
+- 使用 `schedule_mode freeze_rho` (不使用 `fusion_mode bounded_perturb`)
+- 移除 `residual_mode tanh`
+- 保持 `eps_max 0.03`, `eps_init 0.015`, `freeze_steps 2000`
+
+#### 影响的实验
+
+- M2 best_baseline → 重新运行
+- M3 LP knn → 重新运行  
+- M4 velocity_corr v2 → 新增
+- M4 jacobian_corr v2 → 新增

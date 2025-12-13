@@ -210,6 +210,38 @@ class Deformation(nn.Module):
         
         self.scales_deform = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 3))
         self.rotations_deform = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 4))
+        
+        # ============================================================
+        # M1: Eulerian Uncertainty Head for Uncertainty-Gated Fusion
+        # ============================================================
+        # Outputs log-variance s_E(x,t) = log(σ_E²) for each Gaussian position
+        # This is used in PhysX-Boosted M1 to compute adaptive gate β(x,t)
+        #
+        # Paper notation (M1 fusion):
+        #   Φ(x,t) = Φ_L(x,t) + β(x,t) · Φ_E(x,t)
+        #   β = σ_L² / (σ_L² + σ_E²)  [Bayes mode]
+        #   β = sigmoid((τ - s_E) / λ)  [Sigmoid mode]
+        #
+        # High s_E (uncertain) → low β → trust Lagrangian more
+        # Low s_E (confident) → high β → Eulerian contributes more
+        # ============================================================
+        self.fusion_mode = getattr(self.args, 'fusion_mode', 'fixed_alpha')
+        eulerian_uncertainty_hidden = getattr(self.args, 'eulerian_uncertainty_hidden_dim', 32)
+        s_E_init = getattr(self.args, 'eulerian_s_E_init', 0.0)
+        
+        # Uncertainty head: takes trunk features hidden [N, W] → s_E [N, 1]
+        self.uncertainty_head = nn.Sequential(
+            nn.ReLU(),
+            nn.Linear(self.W, eulerian_uncertainty_hidden),
+            nn.ReLU(),
+            nn.Linear(eulerian_uncertainty_hidden, 1)  # Output: s_E = log(σ²)
+        )
+        # Initialize to output s_E_init (default 0 → σ² = 1)
+        nn.init.zeros_(self.uncertainty_head[-1].weight)
+        nn.init.constant_(self.uncertainty_head[-1].bias, s_E_init)
+        
+        # Cache for M1: store last computed s_E for loss/logging
+        self._last_s_E = None
         # self.density_deform = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 1))
         # self.shs_deform = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 16*3))
 
@@ -566,6 +598,16 @@ class Deformation(nn.Module):
         return rays_pts_emb[:, :3] + dx
     def forward_dynamic(self,rays_pts_emb, scales_emb, rotations_emb, density_emb, time_feature, time_emb):
         hidden = self.query_time(rays_pts_emb, scales_emb, rotations_emb, time_feature, time_emb)
+        
+        # ============================================================
+        # M1: Compute Eulerian uncertainty s_E(x,t) = log(σ_E²)
+        # This is cached for use in uncertainty-gated fusion
+        # ============================================================
+        if self.fusion_mode == 'uncertainty_gated':
+            self._last_s_E = self.uncertainty_head(hidden)  # [N, 1]
+        else:
+            self._last_s_E = None
+        
         if self.args.static_mlp:
             mask = self.static_mlp(hidden)
         elif self.args.empty_voxel:
@@ -812,6 +854,27 @@ class Deformation(nn.Module):
                 parameter_list.append(param)
         return parameter_list
     
+    # ============================================================
+    # M1: Uncertainty-Gated Fusion Getters
+    # ============================================================
+    def get_last_s_E(self):
+        """
+        Get the last computed Eulerian log-variance s_E(x,t).
+        
+        Returns:
+            s_E: Tensor [N, 1] of log-variance values, or None if not computed
+        """
+        return self._last_s_E
+    
+    def get_uncertainty_parameters(self):
+        """
+        Get parameters of the uncertainty head for optimizer.
+        
+        Returns:
+            List of parameters from uncertainty_head
+        """
+        return list(self.uncertainty_head.parameters())
+    
 class deform_network(nn.Module):
     def __init__(self, args) :
         super(deform_network, self).__init__()
@@ -923,6 +986,27 @@ class deform_network(nn.Module):
     
     def get_grid_parameters(self):
         return self.deformation_net.get_grid_parameters()
+    
+    # ============================================================
+    # M1: Uncertainty-Gated Fusion Getters (wrapper)
+    # ============================================================
+    def get_last_s_E(self):
+        """
+        Get the last computed Eulerian log-variance s_E(x,t) from the underlying network.
+        
+        Returns:
+            s_E: Tensor [N, 1] of log-variance values, or None if not computed
+        """
+        return self.deformation_net.get_last_s_E()
+    
+    def get_uncertainty_parameters(self):
+        """
+        Get parameters of the uncertainty head for optimizer.
+        
+        Returns:
+            List of parameters from uncertainty_head
+        """
+        return self.deformation_net.get_uncertainty_parameters()
 
 def initialize_weights(m):
     if isinstance(m, nn.Linear):

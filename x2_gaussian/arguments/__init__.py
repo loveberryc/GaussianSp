@@ -808,6 +808,185 @@ class ModelHiddenParams(ParamGroup):
         # Default False = original behavior (separate forward passes)
         self.st_coupled_render = False
         
+        # ====================================================================
+        # PhysX-Boosted M1: Uncertainty-Gated Residual Fusion
+        # ====================================================================
+        # Core idea: Replace fixed α with adaptive β(x,t) based on Eulerian uncertainty
+        #
+        # Paper notation:
+        #   Φ_L: Lagrangian field (anchor-based transformer) - captures skeleton motion
+        #   Φ_E: Eulerian field (HexPlane) - captures residual high-frequency details
+        #
+        # M1 Fusion (uncertainty-gated residual):
+        #   Φ(x,t) = Φ_L(x,t) + β(x,t) · Φ_E(x,t)
+        #
+        # where β(x,t) is gated by Eulerian uncertainty:
+        #   - Bayes mode: β = σ_L² / (σ_L² + σ_E²(x,t))
+        #   - Sigmoid mode: β = sigmoid((τ - s_E(x,t)) / λ)
+        #
+        # Design philosophy:
+        #   - Lagrangian is the "backbone" (always contributes)
+        #   - Eulerian is the "residual corrector" (contributes when confident)
+        #   - High σ_E → low β → trust Lagrangian more
+        #   - Low σ_E → high β → Eulerian contributes significantly
+        #
+        # MDL-style sparsity (L_gate):
+        #   - Encourage β to be small (prefer Lagrangian when possible)
+        #   - L_gate = E[|β(x,t)|] with lambda_gate weight
+        # ====================================================================
+        
+        # Master switch for M1 fusion mode
+        self.fusion_mode = "fixed_alpha"  # Options: "fixed_alpha", "uncertainty_gated"
+        
+        # Gate mode selection (only used when fusion_mode="uncertainty_gated")
+        self.gate_mode = "bayes"  # Options: "bayes", "sigmoid"
+        
+        # Bayes mode parameters: β = σ_L² / (σ_L² + σ_E²)
+        # 
+        # LEARNING FROM V5: α=0.99 was optimal, meaning HexPlane weight = 0.01
+        # To match this initial behavior in M1:
+        #   β = σ_L² / (σ_L² + 1) = 0.01  →  σ_L² ≈ 0.0101
+        #
+        # This gives M1 similar initial behavior to V5's best setting,
+        # while allowing the network to learn when to trust Eulerian more.
+        self.sigma_L2 = 0.01  # Matches V5 α=0.99 → β≈0.01 initially
+        
+        # Sigmoid mode parameters: β = sigmoid((τ - s_E) / λ)
+        # For β ≈ 0.01 when s_E=0: sigmoid(τ/λ) = 0.01 → τ ≈ -4.6 (with λ=1)
+        self.gate_tau = -4.6  # Threshold τ, matches V5 α=0.99 → β≈0.01
+        self.gate_lambda = 1.0  # Temperature λ (controls sharpness)
+        
+        # β clamping for numerical stability
+        self.beta_min = 0.0  # Minimum β value
+        self.beta_max = 1.0  # Maximum β value
+        
+        # L_gate: Sparsity regularization on β (MDL-style)
+        # Encourages "use Lagrangian when possible"
+        self.m1_lambda_gate = 0.0  # Weight for L_gate = E[|β|] (try 1e-4 ~ 1e-3)
+        
+        # ====================================================================
+        # M1.2: Small Perturbation around V5's Optimal 99:1 Ratio
+        # ====================================================================
+        # KEY INSIGHT: V5 with α=0.99 is optimal. Any other ratio is worse.
+        # M1.1 FAILED because gradient decoupling broke training dynamics.
+        #
+        # M1.2 SOLUTION: Keep V5's gradient flow, add TINY perturbation γ
+        #   dx = (0.99 - γ) * dx_anchor + (0.01 + γ) * dx_hex
+        #   where |γ| ≤ γ_max (default 0.005, i.e., ±0.5% adjustment)
+        #
+        # γ is computed from uncertainty: γ = γ_max * tanh((τ - s_E) / λ)
+        #   - s_E high (uncertain) → γ < 0 → reduce HexPlane (0.5%)
+        #   - s_E low (confident) → γ > 0 → increase HexPlane (1.5%)
+        self.gamma_max = 0.005  # Max perturbation (0.005 = ±0.5%)
+        
+        # ====================================================================
+        # M2: Bounded Learnable Perturbation (ICML formulation)
+        # ====================================================================
+        # Formula: Φ = Φ_L + ε * tanh(Φ_E)
+        #
+        # Key narrative advantage over V5's fixed α=0.99:
+        #   V5: dx = 0.01*dx_hex + 0.99*dx_anchor (fixed weighted average)
+        #   M2: dx = dx_anchor + ε*tanh(dx_hex)   (base + bounded perturbation)
+        #
+        # M2 elegantly captures the insight that:
+        #   - Lagrangian (Anchor) provides the structural base (100%)
+        #   - Eulerian (HexPlane) provides bounded perturbations
+        #
+        # ε parameterization (bounded to prevent shortcut learning):
+        #   ε = ε_max * sigmoid(ρ), where ρ is learnable
+        #
+        # Initialization to match V5's α=0.99:
+        #   ε_init ≈ 0.01 means ~1% scale perturbation
+        # ====================================================================
+        self.eps_max = 0.03   # Maximum ε bound (default 0.03 = 3%)
+        self.eps_init = 0.015 # Initial ε (default 0.015 = 1.5%, based on M1.2 g005 findings)
+        self.use_tanh = False # M2.05: NO tanh (killed signal in M2)
+        
+        # ====================================================================
+        # M2.1: Trust-Region Schedule for Bounded Perturbation
+        # ====================================================================
+        # Goal: Prevent optimizer from taking shortcuts early in training.
+        # Force model to first converge on Lagrangian manifold, then allow residual.
+        #
+        # schedule_mode options:
+        #   "none"       - M2/M2.05 behavior (no schedule)
+        #   "freeze_rho" - Hard freeze: don't update ρ for first freeze_steps
+        #   "warmup_cap" - Soft cap: ε_eff = min(ε, ε_max * warmup_ratio)
+        # ====================================================================
+        self.schedule_mode = "freeze_rho"  # ["none", "freeze_rho", "warmup_cap"]
+        self.freeze_steps = 2000           # For freeze_rho: steps to freeze ρ
+        self.warmup_steps = 5000           # For warmup_cap: steps to warmup ε
+        
+        # ====================================================================
+        # M2.2: Residual Normalization Mode
+        # ====================================================================
+        # Controls how Eulerian residual Δ is normalized before scaling by ε.
+        # This prevents magnitude leakage: ε_eff truly represents trust-region radius.
+        #
+        # residual_mode options:
+        #   "tanh"     - H(Δ) = tanh(Δ), bounds to [-1,1] (M2/M2.1 baseline)
+        #   "rmsnorm"  - H(Δ) = Δ / rms(Δ), RMS normalization per point
+        #   "unitnorm" - H(Δ) = Δ / ||Δ||, L2 unit normalization per point
+        #
+        # "Residual normalization makes ε a true trust-region radius by
+        #  preventing magnitude leakage from the Eulerian stream."
+        # ====================================================================
+        self.residual_mode = "tanh"  # ["tanh", "rmsnorm", "unitnorm"]
+        self.norm_eps = 1e-6         # Epsilon for numerical stability in norm
+        
+        # ====================================================================
+        # M3: Low-Frequency Leakage Penalty (LP Regularization)
+        # ====================================================================
+        # "Low-frequency leakage regularization prevents the Eulerian stream
+        #  from explaining global motion, reserving it for high-frequency
+        #  corrective details around the Lagrangian manifold."
+        #
+        # L_LP = || LP(Δ) ||^2  where LP is a low-pass/smoothing operator
+        #
+        # lp_mode options:
+        #   "knn_mean"       - LP(Δ_i) = mean_{j in N_k(i)} Δ_j
+        #   "graph_laplacian"- LP(Δ_i) = Δ_i - mean_{j in N(i)} Δ_j
+        #
+        # If Δ is smooth (low-freq), LP(Δ) is large -> penalized
+        # If Δ is high-freq detail, LP(Δ) ≈ 0 -> not penalized
+        # ====================================================================
+        self.lp_enable = False       # Master switch for LP regularization
+        self.lambda_lp = 0.01        # Weight for L_LP loss
+        self.lp_mode = "knn_mean"    # ["knn_mean", "graph_laplacian"]
+        self.lp_k = 8                # Number of neighbors for kNN
+        self.lp_subsample = 2048     # Subsample M points for efficiency (0=all)
+        
+        # ====================================================================
+        # M4: Subspace Decoupling Regularization
+        # ====================================================================
+        # "Subspace decoupling regularization discourages the Eulerian residual
+        #  from aligning with the Lagrangian deformation responses, forcing it
+        #  to model complementary details rather than shortcuts."
+        #
+        # L_decouple penalizes cosine similarity between Lagrangian and Eulerian
+        # derivative information (velocity or Jacobian directions).
+        #
+        # decouple_mode options:
+        #   "velocity_corr"           - Compare time derivatives (v_L vs v_E)
+        #   "stochastic_jacobian_corr" - Compare random Jacobian projections
+        # ====================================================================
+        self.decouple_enable = False       # Master switch
+        self.lambda_decouple = 0.01        # Weight for L_decouple
+        self.decouple_mode = "velocity_corr"  # ["velocity_corr", "stochastic_jacobian_corr"]
+        self.decouple_subsample = 2048     # Subsample M points for efficiency
+        self.decouple_stopgrad_L = True    # Detach Lagrangian (only train Eulerian)
+        
+        # velocity_corr specific
+        self.decouple_dt = 0.02            # Time step for velocity approximation
+        self.decouple_use_squared_cos = True  # Use cos^2 instead of |cos|
+        
+        # stochastic_jacobian_corr specific
+        self.decouple_num_dirs = 1         # Number of random directions for Jacobian
+        
+        # Eulerian uncertainty head configuration
+        self.eulerian_uncertainty_hidden_dim = 32  # Hidden dim for s_E prediction MLP
+        self.eulerian_s_E_init = 0.0  # Initial value for log-variance output (s_E=0 → σ²=1)
+        
         super().__init__(parser, "ModelHiddenParams")
 
 
