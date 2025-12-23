@@ -1540,7 +1540,7 @@ def scene_reconstruction(
                         loss["m2_norm_E"] = m2_stats['mean_norm_E']
                         loss["m2_norm_H"] = m2_stats['mean_norm_H']
                 
-                # Print M2.2 stats periodically
+                # Print M2.1a/M2.2 stats periodically
                 if iteration % 1000 == 0:
                     eps_raw = m2_stats.get('eps_raw', 0)
                     eps_eff = m2_stats.get('eps_eff', 0)
@@ -1548,12 +1548,18 @@ def scene_reconstruction(
                     is_frozen = m2_stats.get('is_frozen', False)
                     warmup_ratio = m2_stats.get('warmup_ratio', 1.0)
                     schedule_mode = m2_stats.get('schedule_mode', 'none')
-                    residual_mode = m2_stats.get('residual_mode', 'tanh')
+                    residual_mode = m2_stats.get('residual_mode', 'none')
                     mean_norm_E = m2_stats.get('mean_norm_E', 0)
                     mean_norm_H = m2_stats.get('mean_norm_H', 0)
                     frozen_str = " [FROZEN]" if is_frozen else ""
-                    print(f"[M2.2] iter={iteration}: ε_raw={eps_raw:.6f}, ε_eff={eps_eff:.6f}, "
-                          f"ρ={rho:.4f}, H={residual_mode}, ||Δ||={mean_norm_E:.4f}, ||H||={mean_norm_H:.4f}{frozen_str}")
+                    if residual_mode == 'none':
+                        # M2.1a: No normalization
+                        print(f"[M2.1] iter={iteration}: ε_raw={eps_raw:.6f}, ε_eff={eps_eff:.6f}, "
+                              f"ρ={rho:.4f}, warmup={warmup_ratio:.2f}, mode={schedule_mode}{frozen_str}")
+                    else:
+                        # M2.2: With normalization
+                        print(f"[M2.2] iter={iteration}: ε_raw={eps_raw:.6f}, ε_eff={eps_eff:.6f}, "
+                              f"ρ={rho:.4f}, H={residual_mode}, ||Δ||={mean_norm_E:.4f}, ||H||={mean_norm_H:.4f}{frozen_str}")
             
             # ================================================================
             # M3: Low-Frequency Leakage Penalty (LP Regularization)
@@ -1630,6 +1636,144 @@ def scene_reconstruction(
                     else:
                         print(f"[M4] iter={iteration}: L_dec={dec_loss:.6f}, |cos|={corr_mean:.4f}, "
                               f"mode={dec_mode}, stopgrad_L={stopgrad}")
+            
+            # ================================================================
+            # M5: Phase-Aware Trust-Region ε(t) - Smoothness Loss
+            # ================================================================
+            # "Phase-aware trust-region allocates a bounded residual budget across
+            #  respiratory phases, preserving Lagrangian dominance while enabling
+            #  demand-driven corrections."
+            #
+            # L_smooth = mean_k (ε_{k+1} - ε_k)^2
+            # Prevents per-frame overfitting and encourages smooth ε(t) curves
+            if (fusion_mode == 'bounded_perturb' and 
+                gaussians._deformation_anchor is not None and
+                gaussians._deformation_anchor.phase_eps_enable):
+                
+                phase_eps_smooth_lambda = getattr(hyper, 'phase_eps_smooth_lambda', 1e-4)
+                if phase_eps_smooth_lambda > 0:
+                    L_smooth = gaussians._deformation_anchor.compute_phase_eps_smooth_loss()
+                    loss["m5_L_smooth"] = L_smooth
+                    loss["total"] = loss["total"] + phase_eps_smooth_lambda * L_smooth
+                
+                # Log M5 statistics
+                m5_stats = gaussians._deformation_anchor.get_phase_eps_stats()
+                if m5_stats:
+                    loss["m5_mean_eps"] = m5_stats.get('mean_eps', 0)
+                    loss["m5_min_eps"] = m5_stats.get('min_eps', 0)
+                    loss["m5_max_eps"] = m5_stats.get('max_eps', 0)
+                    loss["m5_std_eps"] = m5_stats.get('std_eps', 0)
+                
+                # Print M5 stats periodically
+                if iteration % 1000 == 0:
+                    mean_eps = m5_stats.get('mean_eps', 0)
+                    min_eps = m5_stats.get('min_eps', 0)
+                    max_eps = m5_stats.get('max_eps', 0)
+                    std_eps = m5_stats.get('std_eps', 0)
+                    mode = m5_stats.get('mode', 'per_frame')
+                    is_frozen = m5_stats.get('is_frozen', False)
+                    frozen_str = " [FROZEN]" if is_frozen else ""
+                    print(f"[M5] iter={iteration}: ε(t) mean={mean_eps:.4f}, "
+                          f"min={min_eps:.4f}, max={max_eps:.4f}, std={std_eps:.4f}, "
+                          f"mode={mode}{frozen_str}")
+            
+            # ================================================================
+            # M6: High-Pass Structural Decomposition - Logging
+            # ================================================================
+            # "Unlike penalty-based regularization, we enforce a structural
+            #  frequency split of the Eulerian residual in the forward pass,
+            #  allocating a bounded correction budget to the high-frequency
+            #  component to prevent shortcut learning."
+            if (fusion_mode == 'bounded_perturb' and 
+                gaussians._deformation_anchor is not None and
+                gaussians._deformation_anchor.hpass_enable):
+                
+                # Log M6 statistics
+                m6_stats = gaussians._deformation_anchor.get_m6_statistics()
+                if m6_stats:
+                    loss["m6_eps_high"] = m6_stats.get('eps_high', 0)
+                    loss["m6_eps_low"] = m6_stats.get('eps_low', 0)
+                    loss["m6_E_low"] = m6_stats.get('E_low', 0)
+                    loss["m6_E_high"] = m6_stats.get('E_high', 0)
+                    loss["m6_E_ratio"] = m6_stats.get('E_ratio', 0)
+                
+                # Print M6 stats periodically
+                if iteration % 1000 == 0:
+                    eps_high = m6_stats.get('eps_high', 0)
+                    eps_low = m6_stats.get('eps_low', 0)
+                    E_low = m6_stats.get('E_low', 0)
+                    E_high = m6_stats.get('E_high', 0)
+                    E_ratio = m6_stats.get('E_ratio', 0)
+                    eps_low_mode = m6_stats.get('eps_low_mode', 'zero')
+                    is_frozen = m6_stats.get('is_frozen', False)
+                    frozen_str = " [FROZEN]" if is_frozen else ""
+                    print(f"[M6] iter={iteration}: ε_high={eps_high:.4f}, ε_low={eps_low:.4f}, "
+                          f"E_low={E_low:.4f}, E_high={E_high:.4f}, ratio={E_ratio:.4f}, "
+                          f"mode={eps_low_mode}{frozen_str}")
+        
+            # ================================================================
+            # M8: Transport-Correction Decomposition Logging
+            # ================================================================
+            if (gaussians._deformation_anchor is not None and
+                gaussians._deformation_anchor.transport_correct_enable):
+                
+                # Log M8 statistics
+                m8_stats = gaussians._deformation_anchor.get_m8_statistics()
+                if m8_stats:
+                    loss["m8_eps"] = m8_stats.get('eps', 0) or 0
+                    loss["m8_delta_norm"] = m8_stats.get('delta_norm', 0) or 0
+                    loss["m8_transport_norm"] = m8_stats.get('transport_norm', 0) or 0
+                    if m8_stats.get('budget_loss') is not None:
+                        loss["m8_budget_loss"] = m8_stats.get('budget_loss', 0)
+                        # Add budget loss to total loss
+                        loss["total"] = loss["total"] + m8_stats.get('budget_loss', 0)
+                    
+                    # Print M8 stats periodically (moved inside if m8_stats block)
+                    if iteration % 1000 == 0:
+                        eps = m8_stats.get('eps', 0) or 0
+                        delta_norm = m8_stats.get('delta_norm', 0) or 0
+                        transport_norm = m8_stats.get('transport_norm', 0) or 0
+                        comoving = m8_stats.get('comoving', True)
+                        learnable = m8_stats.get('learnable_beta', False)
+                        budget_loss = m8_stats.get('budget_loss')
+                        frame_str = "comoving" if comoving else "original"
+                        beta_str = f", β_budget_loss={budget_loss:.6f}" if budget_loss is not None else ""
+                        print(f"[M8] iter={iteration}: ε={eps:.4f}, ||Δ||={delta_norm:.4f}, "
+                              f"||Φ_L||={transport_norm:.4f}, frame={frame_str}{beta_str}")
+            
+            # ================================================================
+            # s1/s1.1/s1.2: Per-Anchor Gamma Logging and Loss
+            # ================================================================
+            if (gaussians._deformation_anchor is not None and
+                gaussians._deformation_anchor.per_anchor_gamma):
+                
+                # Get s1 regularization loss (graph + temporal smoothness)
+                s1_loss = gaussians._deformation_anchor.get_s1_loss()
+                if s1_loss is not None:
+                    loss["total"] = loss["total"] + s1_loss
+                
+                # Log s1 statistics
+                s1_stats = gaussians._deformation_anchor.get_s1_statistics()
+                if s1_stats:
+                    loss["s1_gamma_mean"] = s1_stats.get('gamma_mean', 0)
+                    loss["s1_gamma_std"] = s1_stats.get('gamma_std', 0)
+                    if s1_stats.get('graph_loss') is not None:
+                        loss["s1_graph_loss"] = s1_stats.get('graph_loss', 0)
+                    if s1_stats.get('temp_loss') is not None:
+                        loss["s1_temp_loss"] = s1_stats.get('temp_loss', 0)
+                    
+                    # Print s1 stats periodically
+                    if iteration % 1000 == 0:
+                        gamma_mean = s1_stats.get('gamma_mean', 0)
+                        gamma_std = s1_stats.get('gamma_std', 0)
+                        graph_loss = s1_stats.get('graph_loss')
+                        temp_loss = s1_stats.get('temp_loss')
+                        loss_str = ""
+                        if graph_loss is not None:
+                            loss_str += f", L_graph={graph_loss:.6f}"
+                        if temp_loss is not None:
+                            loss_str += f", L_temp={temp_loss:.6f}"
+                        print(f"[s1] iter={iteration}: γ_mean={gamma_mean:.5f}, γ_std={gamma_std:.5f}{loss_str}")
         
         loss["total"].backward()
         
@@ -1638,6 +1782,23 @@ def scene_reconstruction(
             gaussians._deformation_anchor.should_freeze_rho()):
             if hasattr(gaussians._deformation_anchor, 'rho') and gaussians._deformation_anchor.rho.grad is not None:
                 gaussians._deformation_anchor.rho.grad.zero_()
+            
+            # M5: Also freeze phase_epsilon parameters during freeze period
+            # This inherits M2.1a's freeze logic for phase-aware ε(t)
+            if (gaussians._deformation_anchor.phase_eps_enable and 
+                gaussians._deformation_anchor.phase_epsilon is not None):
+                for param in gaussians._deformation_anchor.phase_epsilon.parameters():
+                    if param.grad is not None:
+                        param.grad.zero_()
+            
+            # M6: Also freeze rho_high and rho_low during freeze period
+            if gaussians._deformation_anchor.hpass_enable:
+                if hasattr(gaussians._deformation_anchor, 'rho_high') and gaussians._deformation_anchor.rho_high is not None:
+                    if gaussians._deformation_anchor.rho_high.grad is not None:
+                        gaussians._deformation_anchor.rho_high.grad.zero_()
+                if hasattr(gaussians._deformation_anchor, 'rho_low') and gaussians._deformation_anchor.rho_low is not None:
+                    if gaussians._deformation_anchor.rho_low.grad is not None:
+                        gaussians._deformation_anchor.rho_low.grad.zero_()
         
         iter_end.record()
         torch.cuda.synchronize()

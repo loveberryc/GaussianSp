@@ -202,6 +202,50 @@ def create_sparse_dataset(input_path, output_dir, view_ratio, strategy='uniform'
     return output_path
 
 
+def create_combined_dataset(input_path, output_dir, noise_level, view_ratio, 
+                            strategy='uniform', seed=42):
+    """
+    Create a combined dataset with BOTH phase perturbation AND sparse views.
+    
+    The perturbations are applied in sequence:
+    1. First apply phase perturbation
+    2. Then apply sparse view reduction
+    
+    Args:
+        input_path: Original pickle file
+        output_dir: Output directory
+        noise_level: Phase noise level (relative to phase duration)
+        view_ratio: Ratio of views to keep
+        strategy: Strategy for view reduction
+        seed: Random seed
+    
+    Returns:
+        Path to the created dataset
+    """
+    with open(input_path, 'rb') as f:
+        data = pickle.load(f)
+    
+    print(f"[Combined Dataset: Phase Perturbation + Sparse Views]")
+    
+    # Step 1: Apply phase perturbation
+    data_perturbed = perturb_phase(data, noise_level=noise_level, seed=seed)
+    
+    # Step 2: Apply sparse view reduction
+    data_combined = reduce_views(data_perturbed, view_ratio=view_ratio, 
+                                  strategy=strategy, seed=seed)
+    
+    # Save with combined naming
+    basename = os.path.basename(input_path).replace('.pickle', '')
+    output_name = f"{basename}_noise{noise_level}_sparse{int(view_ratio*100)}.pickle"
+    output_path = os.path.join(output_dir, output_name)
+    
+    with open(output_path, 'wb') as f:
+        pickle.dump(data_combined, f)
+    
+    print(f"\nSaved combined dataset to: {output_path}")
+    return output_path
+
+
 def main():
     parser = argparse.ArgumentParser(description="Create robustness test datasets")
     parser.add_argument("--input", type=str, required=True,
@@ -219,6 +263,9 @@ def main():
                         help="Random seed")
     parser.add_argument("--generate_init", action="store_true",
                         help="Generate init .npy file after creating dataset")
+    parser.add_argument("--combine", action="store_true",
+                        help="Create a SINGLE combined dataset with both phase_noise and view_ratio. "
+                             "Requires both --phase_noise and --view_ratio to be specified.")
     
     args = parser.parse_args()
     
@@ -226,25 +273,41 @@ def main():
     
     created_files = []
     
-    # Create phase-perturbed dataset
-    if args.phase_noise is not None:
+    # Combined mode: create a single dataset with both perturbations
+    if args.combine:
+        if args.phase_noise is None or args.view_ratio is None:
+            print("ERROR: --combine requires both --phase_noise and --view_ratio")
+            sys.exit(1)
+        
         print("\n" + "="*60)
-        print("Creating Phase-Perturbed Dataset")
+        print("Creating Combined Dataset (Phase Noise + Sparse Views)")
         print("="*60)
-        output_path = create_perturbed_dataset(
-            args.input, args.output_dir, args.phase_noise, args.seed
+        output_path = create_combined_dataset(
+            args.input, args.output_dir, args.phase_noise, args.view_ratio,
+            args.view_strategy, args.seed
         )
         created_files.append(output_path)
-    
-    # Create sparse-view dataset
-    if args.view_ratio is not None:
-        print("\n" + "="*60)
-        print("Creating Sparse-View Dataset")
-        print("="*60)
-        output_path = create_sparse_dataset(
-            args.input, args.output_dir, args.view_ratio, args.view_strategy, args.seed
-        )
-        created_files.append(output_path)
+    else:
+        # Separate mode: create individual datasets
+        # Create phase-perturbed dataset
+        if args.phase_noise is not None:
+            print("\n" + "="*60)
+            print("Creating Phase-Perturbed Dataset")
+            print("="*60)
+            output_path = create_perturbed_dataset(
+                args.input, args.output_dir, args.phase_noise, args.seed
+            )
+            created_files.append(output_path)
+        
+        # Create sparse-view dataset
+        if args.view_ratio is not None:
+            print("\n" + "="*60)
+            print("Creating Sparse-View Dataset")
+            print("="*60)
+            output_path = create_sparse_dataset(
+                args.input, args.output_dir, args.view_ratio, args.view_strategy, args.seed
+            )
+            created_files.append(output_path)
     
     # Generate init files
     if args.generate_init and created_files:

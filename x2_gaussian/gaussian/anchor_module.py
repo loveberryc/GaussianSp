@@ -28,6 +28,7 @@ from typing import Tuple, Optional
 
 from .hexplane import HexPlaneField
 from .deformation import deform_network  # For PhysX-Boosted (full HexPlane baseline)
+from .graphics_utils import batch_quaternion_multiply
 
 
 def farthest_point_sampling(points: torch.Tensor, num_samples: int) -> torch.Tensor:
@@ -164,6 +165,372 @@ class TimeEncoding(nn.Module):
         fourier = torch.cat([torch.sin(freq_t), torch.cos(freq_t)], dim=-1)  # [B, 2*num_freqs]
         
         return self.proj(fourier)  # [B, d_model]
+
+
+class PhaseEpsilon(nn.Module):
+    """
+    M5: Phase-Aware Trust-Region ε(t) Module.
+    
+    "Phase-aware trust-region allocates a bounded residual budget across
+     respiratory phases, preserving Lagrangian dominance while enabling
+     demand-driven corrections."
+    
+    Computes time-conditioned epsilon: ε(t) = ε_max * sigmoid(g(t))
+    where g(t) is a low-capacity function.
+    
+    Two modes:
+      - per_frame: g_k is a learnable vector [T], one scalar per discrete phase
+      - tiny_mlp:  g(t) is a small MLP with Fourier time encoding
+    """
+    
+    def __init__(
+        self,
+        mode: str = "per_frame",
+        num_frames: int = 10,
+        mlp_hidden: int = 32,
+        mlp_layers: int = 2,
+        eps_init: float = 0.015,
+        eps_max: float = 0.03,
+        num_fourier_freqs: int = 4
+    ):
+        super().__init__()
+        self.mode = mode
+        self.num_frames = num_frames
+        self.eps_max = eps_max
+        self.eps_init = eps_init
+        
+        # Compute initial rho such that sigmoid(rho) = eps_init / eps_max
+        eps_ratio = min(max(eps_init / eps_max, 1e-6), 1 - 1e-6)
+        rho_init = math.log(eps_ratio / (1 - eps_ratio))  # logit
+        
+        if mode == "per_frame":
+            # Per-frame learnable parameters g_k
+            # Initialize all to same value (reproduces baseline initially)
+            self.g = nn.Parameter(torch.full((num_frames,), rho_init))
+            
+        elif mode == "tiny_mlp":
+            # Tiny MLP with Fourier time encoding
+            self.num_fourier_freqs = num_fourier_freqs
+            input_dim = num_fourier_freqs * 2  # sin + cos for each freq
+            
+            # Build MLP layers
+            layers = []
+            in_dim = input_dim
+            for i in range(mlp_layers - 1):
+                layers.extend([
+                    nn.Linear(in_dim, mlp_hidden),
+                    nn.ReLU(inplace=True)
+                ])
+                in_dim = mlp_hidden
+            # Final layer outputs scalar g(t)
+            layers.append(nn.Linear(in_dim, 1))
+            self.mlp = nn.Sequential(*layers)
+            
+            # Initialize MLP with small weights to output near rho_init
+            # Last layer bias = rho_init, weights = small
+            for m in self.mlp.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.normal_(m.weight, std=0.01)
+                    nn.init.zeros_(m.bias)
+            # Set last layer bias to rho_init
+            self.mlp[-1].bias.data.fill_(rho_init)
+            
+            # Fixed Fourier frequency bands for time encoding
+            self.register_buffer(
+                'freq_bands',
+                torch.linspace(1.0, num_fourier_freqs, num_fourier_freqs) * math.pi
+            )
+        else:
+            raise ValueError(f"Unknown phase_eps mode: {mode}")
+        
+        # Cache for logging
+        self._last_eps_values = None  # All ε values for logging
+        self._last_g_values = None    # Raw g values before sigmoid
+        
+        print(f"[M5] PhaseEpsilon initialized:")
+        print(f"     mode={mode}, eps_init={eps_init:.4f}, eps_max={eps_max:.4f}")
+        if mode == "per_frame":
+            print(f"     num_frames={num_frames}, g_init={rho_init:.4f}")
+        else:
+            print(f"     mlp_hidden={mlp_hidden}, mlp_layers={mlp_layers}")
+    
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        """
+        Compute ε(t) for given time values.
+        
+        Args:
+            t: Time values in [0, 1], shape [] (scalar), [1], or [N, 1]
+        
+        Returns:
+            eps: Epsilon value(s), same shape as input or scalar
+        """
+        # Normalize t to scalar if needed
+        if t.dim() == 2:
+            t_scalar = t[0, 0]
+        elif t.dim() == 1:
+            t_scalar = t[0]
+        else:
+            t_scalar = t
+        
+        if self.mode == "per_frame":
+            # Map t to discrete frame index
+            # t in [0, 1] -> frame_idx in [0, num_frames-1]
+            t_clamped = torch.clamp(t_scalar, 0.0, 1.0 - 1e-6)
+            frame_idx = (t_clamped * self.num_frames).long()
+            frame_idx = torch.clamp(frame_idx, 0, self.num_frames - 1)
+            
+            # Get g value for this frame
+            g_t = self.g[frame_idx]
+            
+        elif self.mode == "tiny_mlp":
+            # Fourier encoding of time
+            if t_scalar.dim() == 0:
+                t_in = t_scalar.unsqueeze(0)  # [1]
+            else:
+                t_in = t_scalar
+            t_in = t_in.unsqueeze(-1)  # [1, 1]
+            
+            # Fourier features: [sin(f1*t), cos(f1*t), ...]
+            freq_t = t_in * self.freq_bands  # [1, num_freqs]
+            fourier = torch.cat([torch.sin(freq_t), torch.cos(freq_t)], dim=-1)  # [1, 2*num_freqs]
+            
+            # MLP forward
+            g_t = self.mlp(fourier).squeeze()  # scalar
+        
+        # Compute ε(t) = ε_max * sigmoid(g(t))
+        eps_t = self.eps_max * torch.sigmoid(g_t)
+        
+        # Cache for logging
+        self._last_g_values = g_t.detach()
+        self._last_eps_values = eps_t.detach()
+        
+        return eps_t
+    
+    def get_all_eps_values(self, num_samples: int = 50) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Get ε values across all time points for visualization.
+        
+        Args:
+            num_samples: Number of time samples (for tiny_mlp mode)
+        
+        Returns:
+            t_values: Time values [T] or [num_samples]
+            eps_values: Corresponding ε values
+        """
+        device = next(self.parameters()).device
+        
+        if self.mode == "per_frame":
+            # Return all per-frame eps values
+            eps_values = self.eps_max * torch.sigmoid(self.g)  # [num_frames]
+            t_values = torch.linspace(0, 1, self.num_frames, device=device)
+            return t_values.detach(), eps_values.detach()
+        
+        else:  # tiny_mlp
+            # Sample at num_samples points
+            t_values = torch.linspace(0, 1, num_samples, device=device)
+            eps_values = []
+            for t in t_values:
+                eps_t = self.forward(t)
+                eps_values.append(eps_t.item())
+            eps_values = torch.tensor(eps_values, device=device)
+            return t_values.detach(), eps_values.detach()
+    
+    def compute_smooth_loss(self) -> torch.Tensor:
+        """
+        Compute temporal smoothness prior L_smooth.
+        
+        For per_frame: L_smooth = mean_k (ε_{k+1} - ε_k)^2
+        For tiny_mlp:  L_smooth = mean (ε(t+dt) - ε(t))^2 over sampled t
+        
+        Returns:
+            L_smooth: Smoothness loss (scalar)
+        """
+        if self.mode == "per_frame":
+            # Compute all eps values
+            eps_all = self.eps_max * torch.sigmoid(self.g)  # [num_frames]
+            
+            # First-order difference
+            eps_diff = eps_all[1:] - eps_all[:-1]  # [num_frames-1]
+            
+            # MSE of differences
+            L_smooth = (eps_diff ** 2).mean()
+            
+        else:  # tiny_mlp
+            # Sample at a few points and compute differences
+            device = next(self.parameters()).device
+            num_samples = 10
+            dt = 1.0 / num_samples
+            
+            diffs = []
+            for i in range(num_samples):
+                t1 = torch.tensor(i * dt, device=device)
+                t2 = torch.tensor((i + 1) * dt, device=device)
+                eps1 = self.forward(t1)
+                eps2 = self.forward(t2)
+                diffs.append((eps2 - eps1) ** 2)
+            
+            L_smooth = torch.stack(diffs).mean()
+        
+        return L_smooth
+    
+    def get_stats(self) -> dict:
+        """
+        Get statistics for logging.
+        
+        Returns:
+            dict with mean_eps, min_eps, max_eps, std_eps
+        """
+        t_vals, eps_vals = self.get_all_eps_values()
+        return {
+            'mean_eps': eps_vals.mean().item(),
+            'min_eps': eps_vals.min().item(),
+            'max_eps': eps_vals.max().item(),
+            'std_eps': eps_vals.std().item(),
+        }
+
+
+class LowPassOperator(nn.Module):
+    """
+    M6: Low-Pass Operator for Structural Frequency Decomposition
+    
+    "Unlike penalty-based regularization, we enforce a structural frequency
+     split of the Eulerian residual in the forward pass, allocating a bounded
+     correction budget to the high-frequency component to prevent shortcut
+     learning."
+    
+    Computes r_low = LP(r) via neighbor averaging:
+        r_low[i] = mean_{j in N(i)} r[j]
+    
+    Supports two modes:
+        - "graph": Uses existing anchor graph/adjacency
+        - "knn_cached": Pre-computes kNN in canonical space, caches indices
+    """
+    
+    def __init__(self, mode: str = "graph", k: int = 8):
+        """
+        Args:
+            mode: "graph" or "knn_cached"
+            k: Number of neighbors for LP
+        """
+        super().__init__()
+        self.mode = mode
+        self.k = k
+        
+        # Cached Anchor kNN indices (only used for knn_cached mode)
+        # NOTE: anchors are small (e.g. 1024), so O(M^2) is acceptable.
+        self._anchor_knn_indices: Optional[torch.Tensor] = None
+        self._cached_for_n_anchors: int = 0
+
+    def build_anchor_knn_cache(self, anchor_positions: torch.Tensor) -> None:
+        """
+        Pre-compute and cache kNN indices among anchors.
+
+        Args:
+            anchor_positions: Anchor positions [M, 3]
+        """
+        M = anchor_positions.shape[0]
+        if self._anchor_knn_indices is not None and self._cached_for_n_anchors == M:
+            return
+
+        k = min(self.k + 1, M)
+        with torch.no_grad():
+            dists = torch.cdist(anchor_positions, anchor_positions)  # [M, M]
+            _, knn = torch.topk(dists, k, largest=False, dim=-1)     # [M, k]
+            # Exclude self (first neighbor is always self with dist=0)
+            knn = knn[:, 1:]
+            self._anchor_knn_indices = knn.contiguous()
+            self._cached_for_n_anchors = M
+            
+    def forward(
+        self,
+        r: torch.Tensor,
+        knn_indices: torch.Tensor,
+        knn_weights: torch.Tensor,
+        anchor_positions: torch.Tensor,
+        anchor_graph: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Apply low-pass filter to residual field.
+        
+        Args:
+            r: Residual field [N, 3] or [N, D]
+            knn_indices: Gaussian -> anchor indices [N, K]
+            knn_weights: Gaussian -> anchor weights [N, K]
+            anchor_positions: Anchor positions [M, 3]
+            anchor_graph: Optional anchor adjacency [M, k] (only used when mode=="graph")
+        
+        Returns:
+            r_low: Low-frequency component [N, 3] or [N, D]
+        """
+        # ------------------------------------------------
+        # Efficient low-pass using the existing Gaussian->Anchor binding graph.
+        # Steps:
+        #   1) Scatter weighted Gaussian residuals to anchors (aggregate)
+        #   2) Optional anchor-space neighbor average (knn_cached)
+        #   3) Gather back to Gaussians via the same skinning weights
+        # Complexity: O(N*K + M*k_anchor)
+        # ------------------------------------------------
+
+        N, K = knn_indices.shape
+        M = anchor_positions.shape[0]
+        D = r.shape[-1]
+
+        idx = knn_indices.reshape(-1)  # [N*K]
+        w = knn_weights.reshape(-1, 1)  # [N*K, 1]
+        r_rep = r.unsqueeze(1).expand(-1, K, -1).reshape(-1, D)  # [N*K, D]
+
+        # Scatter Gaussian residuals to anchors
+        r_sum = torch.zeros((M, D), device=r.device, dtype=r.dtype)
+        w_sum = torch.zeros((M, 1), device=r.device, dtype=r.dtype)
+        r_sum.index_add_(0, idx, r_rep * w)
+        w_sum.index_add_(0, idx, w)
+        r_anchor = r_sum / (w_sum + 1e-8)  # [M, D]
+
+        # Optional: anchor-space smoothing
+        if self.mode == "knn_cached":
+            if self._anchor_knn_indices is None or self._cached_for_n_anchors != M:
+                self.build_anchor_knn_cache(anchor_positions)
+            a_knn = self._anchor_knn_indices.to(r.device)  # [M, k]
+            r_anchor = r_anchor[a_knn].mean(dim=1)  # [M, D]
+        elif self.mode == "graph" and anchor_graph is not None:
+            a_knn = anchor_graph.to(r.device)
+            r_anchor = r_anchor[a_knn].mean(dim=1)
+
+        # Gather back to Gaussians
+        r_low = torch.sum(r_anchor[knn_indices] * knn_weights.unsqueeze(-1), dim=1)  # [N, D]
+        return r_low
+    
+    def get_high_pass(
+        self, 
+        r: torch.Tensor,
+        knn_indices: torch.Tensor,
+        knn_weights: torch.Tensor,
+        anchor_positions: torch.Tensor,
+        anchor_graph: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Decompose residual into low and high frequency components.
+        
+        Args:
+            r: Residual field [N, 3]
+            knn_indices: Gaussian -> anchor indices [N, K]
+            knn_weights: Gaussian -> anchor weights [N, K]
+            anchor_positions: Anchor positions [M, 3]
+            anchor_graph: Optional pre-computed anchor adjacency [M, k]
+        
+        Returns:
+            r_low: Low-frequency component [N, 3]
+            r_high: High-frequency component [N, 3]
+        """
+        r_low = self.forward(
+            r=r,
+            knn_indices=knn_indices,
+            knn_weights=knn_weights,
+            anchor_positions=anchor_positions,
+            anchor_graph=anchor_graph,
+        )
+        r_high = r - r_low
+        return r_low, r_high
 
 
 class AnchorEmbedding(nn.Module):
@@ -581,8 +948,60 @@ class AnchorDeformationNet(nn.Module):
         # With γ_max=0.01: HexPlane weight can vary from 0% to 2%
         self.gamma_max = getattr(args, 'gamma_max', 0.005)
         
+        # s1: Per-Anchor Small-Perturbation (spatially-varying γ)
+        self.per_anchor_gamma = getattr(args, 'per_anchor_gamma', False)
+        # s1.1: Anchor Graph spatial smoothness
+        self.lambda_gamma_graph = getattr(args, 'lambda_gamma_graph', 0.0)
+        # s1.2: Temporal smoothness
+        self.lambda_gamma_temp = getattr(args, 'lambda_gamma_temp', 0.0)
+        self.gamma_temp_dt = getattr(args, 'gamma_temp_dt', 0.1)
+        
+        # s2: Extend anchor fusion to scale/rotation
+        self.s2_anchor_to_scale = getattr(args, 's2_anchor_to_scale', False)
+        self.s2_anchor_to_rotation = getattr(args, 's2_anchor_to_rotation', False)
+        
+        # s3: Release scale/rotation from (1-α) multiplier
+        self.s3_release_scale = getattr(args, 's3_release_scale', False)
+        self.s3_release_rotation = getattr(args, 's3_release_rotation', False)
+        self.s3_zero_rotation = getattr(args, 's3_zero_rotation', False)
+
+        # s4.1: Anchor-only position field (dx = α * dx_anchor)
+        self.s4_1_anchor_only_position = getattr(args, 's4_1_anchor_only_position', False)
+        self.s4_dx_anchor_weight = getattr(args, 's4_dx_anchor_weight', -1.0)
+        self.s4_dr_hex_weight = getattr(args, 's4_dr_hex_weight', -1.0)
+
+        self.s5_rot_nlerp = getattr(args, 's5_rot_nlerp', False)
+        self.s5_scale_log_fusion = getattr(args, 's5_scale_log_fusion', False)
+        self.s5_jacobian_sr = getattr(args, 's5_jacobian_sr', False)
+        self.s5_jacobian_k = getattr(args, 's5_jacobian_k', 8)
+        self.s5_eps = getattr(args, 's5_eps', 1e-8)
+        
+        # s0: Gate function variants for M1.2
+        self.s0_gate_type = getattr(args, 's0_gate_type', 'tanh')
+        self.s0_normalize_se = getattr(args, 's0_normalize_se', False)
+        self.s0_se_ema_decay = getattr(args, 's0_se_ema_decay', 0.99)
+        self.s0_residual_mode = getattr(args, 's0_residual_mode', False)
+        self.s0_beta_min = getattr(args, 's0_beta_min', 0.005)
+        self.s0_beta_max = getattr(args, 's0_beta_max', 0.015)
+
+        # s1.4 preset: s0.1b (sigmoid_bipolar gate) + s1.1 (graph smoothness)
+        self.s1_4 = getattr(args, 's1_4', False)
+        if self.s1_4:
+            self.per_anchor_gamma = True
+            self.s0_gate_type = 'sigmoid_bipolar'
+            if self.lambda_gamma_graph <= 0:
+                self.lambda_gamma_graph = 0.05
+        
+        # s0.2: EMA statistics for s_E normalization
+        self._se_ema_mean = None
+        self._se_ema_var = None
+        
         # Cache for gamma
         self._last_gamma = None
+        self._last_gamma_anchor = None  # s1: per-anchor γᵢ
+        self._last_gamma_anchor_prev = None  # s1.2: previous frame γᵢ for temporal smoothness
+        self._last_gamma_graph_loss = None  # s1.1: spatial smoothness loss
+        self._last_gamma_temp_loss = None   # s1.2: temporal smoothness loss
         
         # Cache for M1: store β and s_E for loss computation and logging
         self._last_beta = None
@@ -631,7 +1050,7 @@ class AnchorDeformationNet(nn.Module):
         # ================================================================
         # "Residual normalization makes ε a true trust-region radius by
         #  preventing magnitude leakage from the Eulerian stream."
-        self.residual_mode = getattr(args, 'residual_mode', 'tanh')
+        self.residual_mode = getattr(args, 'residual_mode', 'none')
         self.norm_eps = getattr(args, 'norm_eps', 1e-6)
         
         # Cache for M2/M2.1/M2.2 logging
@@ -687,6 +1106,144 @@ class AnchorDeformationNet(nn.Module):
         self._last_dx_hex = None     # Eulerian deformation at t
         self._last_time = None       # Current time t
         
+        # ================================================================
+        # M5: Phase-Aware Trust-Region ε(t)
+        # ================================================================
+        # "Phase-aware trust-region allocates a bounded residual budget across
+        #  respiratory phases, preserving Lagrangian dominance while enabling
+        #  demand-driven corrections."
+        self.phase_eps_enable = getattr(args, 'phase_eps_enable', False)
+        self.phase_eps_smooth_lambda = getattr(args, 'phase_eps_smooth_lambda', 1e-4)
+        self.phase_epsilon = None
+        self._last_phase_eps_smooth_loss = None
+        
+        if self.phase_eps_enable and self.fusion_mode == 'bounded_perturb':
+            # Get M5 parameters, fallback to M2 parameters if not specified
+            phase_eps_mode = getattr(args, 'phase_eps_mode', 'per_frame')
+            phase_eps_num_frames = getattr(args, 'phase_eps_num_frames', 10)
+            phase_eps_mlp_hidden = getattr(args, 'phase_eps_mlp_hidden', 32)
+            phase_eps_mlp_layers = getattr(args, 'phase_eps_mlp_layers', 2)
+            phase_eps_init = getattr(args, 'phase_eps_init_eps', None)
+            phase_eps_max = getattr(args, 'phase_eps_eps_max', None)
+            
+            # Fallback to M2's eps_init/eps_max if not specified
+            if phase_eps_init is None:
+                phase_eps_init = self.eps_init
+            if phase_eps_max is None:
+                phase_eps_max = self.eps_max
+            
+            self.phase_epsilon = PhaseEpsilon(
+                mode=phase_eps_mode,
+                num_frames=phase_eps_num_frames,
+                mlp_hidden=phase_eps_mlp_hidden,
+                mlp_layers=phase_eps_mlp_layers,
+                eps_init=phase_eps_init,
+                eps_max=phase_eps_max
+            )
+        
+        # ================================================================
+        # M6: High-Pass Structural Decomposition of Eulerian Residual
+        # ================================================================
+        # "Unlike penalty-based regularization, we enforce a structural frequency
+        #  split of the Eulerian residual in the forward pass, allocating a bounded
+        #  correction budget to the high-frequency component to prevent shortcut
+        #  learning."
+        #
+        # r = Φ_E - Φ_L  (Eulerian residual)
+        # r_low = LP(r)  (low-frequency via neighbor average)
+        # r_high = r - r_low  (high-frequency)
+        # Φ = Φ_L + ε_high * r_high + ε_low * r_low
+        self.hpass_enable = getattr(args, 'hpass_enable', False)
+        self.hpass_lp_mode = getattr(args, 'hpass_lp_mode', 'knn_cached')
+        self.hpass_k = getattr(args, 'hpass_k', 8)
+        self.hpass_eps_low_mode = getattr(args, 'hpass_eps_low_mode', 'zero')
+        
+        # Initialize LP operator
+        self.lp_operator = None
+        self.rho_high = None  # ε_high = eps_high_max * sigmoid(ρ_high)
+        self.rho_low = None   # ε_low = eps_low_max * sigmoid(ρ_low) (bounded_small mode)
+        
+        # M6 cache for logging
+        self._last_eps_high = None
+        self._last_eps_low = None
+        self._last_E_low = None   # mean ||r_low||
+        self._last_E_high = None  # mean ||r_high||
+        self._last_E_ratio = None # E_low / (E_high + 1e-8)
+        
+        if self.hpass_enable and self.fusion_mode in ['bounded_perturb', 'uncertainty_gated']:
+            # Initialize LP operator
+            self.lp_operator = LowPassOperator(
+                mode=self.hpass_lp_mode,
+                k=self.hpass_k
+            )
+            
+            # Get eps_high parameters (fallback to M2's eps_max/eps_init)
+            eps_high_max = getattr(args, 'hpass_eps_high_max', None)
+            eps_high_init = getattr(args, 'hpass_eps_high_init', None)
+            if eps_high_max is None:
+                eps_high_max = self.eps_max
+            if eps_high_init is None:
+                eps_high_init = self.eps_init
+            self.hpass_eps_high_max = eps_high_max
+            self.hpass_eps_high_init = eps_high_init
+            
+            # Initialize ρ_high such that ε_high = eps_high_init
+            eps_ratio = min(max(eps_high_init / eps_high_max, 1e-6), 1 - 1e-6)
+            rho_high_init = math.log(eps_ratio / (1 - eps_ratio))  # logit
+            self.rho_high = nn.Parameter(torch.tensor(rho_high_init, dtype=torch.float32))
+            
+            # Initialize ε_low based on mode
+            if self.hpass_eps_low_mode == 'bounded_small':
+                eps_low_max = getattr(args, 'hpass_eps_low_max', 0.005)
+                eps_low_init = getattr(args, 'hpass_eps_low_init', 0.001)
+                self.hpass_eps_low_max = eps_low_max
+                self.hpass_eps_low_init = eps_low_init
+                
+                eps_ratio_low = min(max(eps_low_init / eps_low_max, 1e-6), 1 - 1e-6)
+                rho_low_init = math.log(eps_ratio_low / (1 - eps_ratio_low))
+                self.rho_low = nn.Parameter(torch.tensor(rho_low_init, dtype=torch.float32))
+            else:
+                self.hpass_eps_low_max = 0.0
+                self.hpass_eps_low_init = 0.0
+        
+        # ================================================================
+        # M8: Transport-Correction Decomposition (Predictor-Corrector)
+        # ================================================================
+        # Serial composition: Lagrangian transport → Eulerian closure
+        #   1. Predictor:  x' = x + Φ_L(x,t)
+        #   2. Corrector:  Δ = Φ_E(x',t)  [comoving frame]
+        #   3. Update:     x(t) = x' + ε·Δ
+        # ================================================================
+        self.transport_correct_enable = getattr(args, 'transport_correct_enable', False)
+        self.transport_correct_eps = getattr(args, 'transport_correct_eps', 0.01)
+        self.transport_correct_comoving = getattr(args, 'transport_correct_comoving', True)
+        self.transport_correct_learnable_beta = getattr(args, 'transport_correct_learnable_beta', False)
+        self.transport_correct_beta_max = getattr(args, 'transport_correct_beta_max', 0.03)
+        self.transport_correct_beta_init = getattr(args, 'transport_correct_beta_init', 0.01)
+        self.transport_correct_beta_budget = getattr(args, 'transport_correct_beta_budget', 0.01)
+        self.transport_correct_lambda_budget = getattr(args, 'transport_correct_lambda_budget', 0.1)
+        
+        # M8 learnable β network (if enabled)
+        self.beta_net = None
+        if self.transport_correct_enable and self.transport_correct_learnable_beta:
+            # Small MLP: (x', t) → β(x',t)
+            # Input: 3 (position) + 1 (time) = 4
+            # Output: 1 (scalar β)
+            self.beta_net = nn.Sequential(
+                nn.Linear(4, 32),
+                nn.ReLU(),
+                nn.Linear(32, 16),
+                nn.ReLU(),
+                nn.Linear(16, 1),
+                nn.Sigmoid()  # β ∈ [0, 1], then scaled by beta_max
+            )
+        
+        # M8 cache for logging
+        self._last_tc_eps = None       # effective ε or mean β
+        self._last_tc_delta_norm = None  # ||Δ|| mean
+        self._last_tc_transport_norm = None  # ||x' - x|| = ||Φ_L|| mean
+        self._last_tc_budget_loss = None  # budget penalty if learnable
+        
         if self.use_boosted:
             # Instantiate the FULL-POWER HexPlane baseline (not lightweight)
             # Use original args directly - preserves all baseline configurations
@@ -723,6 +1280,32 @@ class AnchorDeformationNet(nn.Module):
                 else:
                     print(f"  - V5 LEARNABLE BALANCE: α = sigmoid(τ), τ_init={tau_init:.3f} → α_init={balance_alpha_init:.2f}")
                     print(f"    - Formula: Δx = (1-α)·Δx_hex + α·Δx_anchor")
+                    if self.s2_anchor_to_scale or self.s2_anchor_to_rotation:
+                        s2_mode = []
+                        if self.s2_anchor_to_scale:
+                            s2_mode.append("scale")
+                        if self.s2_anchor_to_rotation:
+                            s2_mode.append("rotation")
+                        print(f"  - s2 ANCHOR FUSION EXTENDED to: {', '.join(s2_mode)}")
+                        if self.s2_anchor_to_scale:
+                            print(f"    - Δs = (1-α)·Δs_hex + α·Δx_anchor")
+                        if self.s2_anchor_to_rotation:
+                            print(f"    - Δr = (1-α)·Δr_hex + α·Δx_anchor")
+                    if self.s3_release_scale or self.s3_release_rotation or self.s3_zero_rotation:
+                        s3_mode = []
+                        if self.s3_release_scale:
+                            s3_mode.append("scale_released")
+                        if self.s3_release_rotation:
+                            s3_mode.append("rotation_released")
+                        if self.s3_zero_rotation:
+                            s3_mode.append("rotation_zeroed")
+                        print(f"  - s3 MODE: {', '.join(s3_mode)}")
+                        if self.s3_release_scale:
+                            print(f"    - Δs = Δs_hex (full HexPlane scale)")
+                        if self.s3_release_rotation:
+                            print(f"    - Δr = Δr_hex (full HexPlane rotation)")
+                        if self.s3_zero_rotation:
+                            print(f"    - Δr = 0 (HexPlane rotation completely disabled)")
             if self.use_orthogonal_projection:
                 print(f"  - V6 ORTHOGONAL GRADIENT PROJECTION: Anchor learns residual only")
                 print(f"    - Forward: Δx = Δx_hex + Δx_anchor (direct sum)")
@@ -780,15 +1363,66 @@ class AnchorDeformationNet(nn.Module):
                 print(f"    - st_mask_embed_scale: {self.st_mask_embed_scale} (1.0=original, <1=reduced interference)")
                 print(f"    - st_coupled_render: {self.st_coupled_render} (False=separate, True=shared forward)")
             if self.fusion_mode == 'uncertainty_gated':
-                print(f"  - M1.2 SMALL PERTURBATION FUSION (preserves V5's 99:1 ratio):")
-                print(f"    - Formula: Φ = (0.99-γ)·Φ_L + (0.01+γ)·Φ_E")
-                print(f"    - γ = γ_max * tanh((τ - s_E) / λ)")
-                print(f"    - γ_max: {self.gamma_max} (HexPlane weight range: [{0.01-self.gamma_max:.3f}, {0.01+self.gamma_max:.3f}])")
-                print(f"    - τ (gate_tau): {self.gate_tau}, λ (gate_lambda): {self.gate_lambda}")
-                print(f"    - m1_lambda_gate: {self.m1_lambda_gate}")
+                # s0.3: Residual mode (different fusion formula)
+                if self.s0_residual_mode:
+                    print(f"  - s0.3 RESIDUAL MODE FUSION (Φ = Φ_L + β·Φ_E):")
+                    print(f"    - Formula: Φ = Φ_L + β·Φ_E (base + residual)")
+                    print(f"    - β = β_min + (β_max - β_min) * sigmoid((τ - s_E) / λ)")
+                    print(f"    - β_min: {self.s0_beta_min}, β_max: {self.s0_beta_max}")
+                    print(f"    - τ (gate_tau): {self.gate_tau}, λ (gate_lambda): {self.gate_lambda}")
+                elif self.per_anchor_gamma:
+                    version = "s1"
+                    if self.lambda_gamma_graph > 0 and self.lambda_gamma_temp > 0:
+                        version = "s1.1+s1.2"
+                    elif self.lambda_gamma_graph > 0:
+                        version = "s1.1"
+                    elif self.lambda_gamma_temp > 0:
+                        version = "s1.2"
+                    print(f"  - {version} PER-ANCHOR SMALL PERTURBATION (spatially-varying γᵢ):")
+                    print(f"    - Formula: Φ = (0.99-γ(x,t))·Φ_L + (0.01+γ(x,t))·Φ_E")
+                    gate_func = "tanh" if self.s0_gate_type == 'tanh' else self.s0_gate_type
+                    print(f"    - γ(x,t) = Σ wᵢ(x)·γᵢ(t), γᵢ = γ_max * {gate_func}((τ - s_E(i,t)) / λ)")
+                    print(f"    - s_E(i,t) aggregated from Gaussians via KNN weights")
+                    if self.lambda_gamma_graph > 0:
+                        print(f"    - s1.1 SPATIAL SMOOTHNESS: L_graph = λ·Σ(γᵢ-γⱼ)², λ={self.lambda_gamma_graph}")
+                    if self.lambda_gamma_temp > 0:
+                        print(f"    - s1.2 TEMPORAL SMOOTHNESS: L_temp = λ·Σ|γᵢ(t)-γᵢ(t-Δt)|², λ={self.lambda_gamma_temp}")
+                else:
+                    print(f"  - M1.2 SMALL PERTURBATION FUSION (preserves V5's 99:1 ratio):")
+                    print(f"    - Formula: Φ = (0.99-γ)·Φ_L + (0.01+γ)·Φ_E")
+                    gate_func = "tanh" if self.s0_gate_type == 'tanh' else self.s0_gate_type
+                    print(f"    - γ = γ_max * {gate_func}((τ - s_E) / λ)")
+                # s0 gate variants logging
+                if self.s0_gate_type != 'tanh':
+                    if self.s0_gate_type == 'sigmoid':
+                        print(f"    - s0.1a GATE: sigmoid (γ ∈ (0, γ_max), positive only)")
+                    elif self.s0_gate_type == 'sigmoid_bipolar':
+                        print(f"    - s0.1b GATE: sigmoid_bipolar (γ = γ_max*(2σ-1), softer than tanh)")
+                if self.s0_normalize_se:
+                    print(f"    - s0.2 NORMALIZE s_E: EMA normalization (decay={self.s0_se_ema_decay})")
+                if not self.s0_residual_mode:
+                    print(f"    - γ_max: {self.gamma_max} (HexPlane weight range: [{0.01-self.gamma_max:.3f}, {0.01+self.gamma_max:.3f}])")
+                    print(f"    - τ (gate_tau): {self.gate_tau}, λ (gate_lambda): {self.gate_lambda}")
+                    print(f"    - m1_lambda_gate: {self.m1_lambda_gate}")
+                if self.hpass_enable and self.lp_operator is not None:
+                    print(f"  - M7 HIGH-PASS STRUCTURAL DECOMPOSITION ON M1.2:")
+                    print(f"    - Formula: Φ = Φ_L + hex_weight·(r_high + tied_factor·r_low)")
+                    print(f"    - r = Φ_E - Φ_L, decompose into r_low (LP) + r_high")
+                    print(f"    - lp_mode: {self.hpass_lp_mode}, k: {self.hpass_k}")
+                    print(f"    - eps_low_mode: {self.hpass_eps_low_mode}")
+                    if self.hpass_eps_low_mode == 'zero':
+                        print(f"    - tied_factor: 0 (hard high-pass)")
+                    elif self.hpass_eps_low_mode == 'tied':
+                        print(f"    - tied_factor: 1.0 (sanity check, = M1.2 baseline)")
+                    else:
+                        print(f"    - tied_factor: learnable via rho_low")
             if self.fusion_mode == 'bounded_perturb':
-                print(f"  - M2.2 LEARNABLE WEIGHTED AVERAGE + TRUST-REGION + RESIDUAL NORM:")
-                print(f"    - Formula: Φ = (1-ε_eff)·Φ_L + ε_eff·H(Φ_E)")
+                if self.residual_mode == 'none':
+                    print(f"  - M2.1a LEARNABLE WEIGHTED AVERAGE + TRUST-REGION:")
+                    print(f"    - Formula: Φ = (1-ε_eff)·Φ_L + ε_eff·Φ_E")
+                else:
+                    print(f"  - M2.2 LEARNABLE WEIGHTED AVERAGE + TRUST-REGION + RESIDUAL NORM:")
+                    print(f"    - Formula: Φ = (1-ε_eff)·Φ_L + ε_eff·H(Φ_E)")
                 print(f"    - ε_raw = ε_max·sigmoid(ρ), ρ is learnable")
                 print(f"    - ε_max: {self.eps_max}, ε_init: {self.eps_init}")
                 print(f"    - ρ_init: {self.rho.item():.4f} → ε_init: {self.eps_max * torch.sigmoid(self.rho).item():.4f}")
@@ -815,6 +1449,57 @@ class AnchorDeformationNet(nn.Module):
                         print(f"    - dt: {self.decouple_dt}")
                     else:
                         print(f"    - num_dirs: {self.decouple_num_dirs}")
+                if self.phase_eps_enable and self.phase_epsilon is not None:
+                    print(f"  - M5 PHASE-AWARE TRUST-REGION ε(t):")
+                    print(f"    - 'Phase-aware trust-region allocates a bounded residual budget")
+                    print(f"       across respiratory phases, preserving Lagrangian dominance")
+                    print(f"       while enabling demand-driven corrections.'")
+                    print(f"    - mode: {self.phase_epsilon.mode}")
+                    print(f"    - eps_init: {self.phase_epsilon.eps_init:.4f}")
+                    print(f"    - eps_max: {self.phase_epsilon.eps_max:.4f}")
+                    if self.phase_epsilon.mode == 'per_frame':
+                        print(f"    - num_frames: {self.phase_epsilon.num_frames}")
+                    else:
+                        print(f"    - mlp_hidden: {getattr(self.args, 'phase_eps_mlp_hidden', 32)}")
+                        print(f"    - mlp_layers: {getattr(self.args, 'phase_eps_mlp_layers', 2)}")
+                    print(f"    - smooth_lambda: {self.phase_eps_smooth_lambda}")
+                    print(f"    - freeze_steps: {self.freeze_steps} (inherits M2.1a schedule)")
+                if self.hpass_enable and self.lp_operator is not None:
+                    print(f"  - M6 HIGH-PASS STRUCTURAL DECOMPOSITION:")
+                    print(f"    - 'Unlike penalty-based regularization, we enforce a structural")
+                    print(f"       frequency split of the Eulerian residual in the forward pass,")
+                    print(f"       allocating a bounded correction budget to the high-frequency")
+                    print(f"       component to prevent shortcut learning.'")
+                    print(f"    - Formula: Φ = Φ_L + ε_high·r_high + ε_low·r_low")
+                    print(f"    - lp_mode: {self.hpass_lp_mode}, k: {self.hpass_k}")
+                    print(f"    - eps_low_mode: {self.hpass_eps_low_mode}")
+                    print(f"    - eps_high_max: {self.hpass_eps_high_max:.4f}, eps_high_init: {self.hpass_eps_high_init:.4f}")
+                    if self.hpass_eps_low_mode == 'bounded_small':
+                        print(f"    - eps_low_max: {self.hpass_eps_low_max:.4f}, eps_low_init: {self.hpass_eps_low_init:.4f}")
+                    elif self.hpass_eps_low_mode == 'zero':
+                        print(f"    - eps_low: 0 (hard high-pass, only r_high contributes)")
+                    else:  # tied
+                        print(f"    - eps_low: tied to eps_high (sanity check, = baseline)")
+                    print(f"    - freeze_steps: {self.freeze_steps} (inherits M2.1a schedule)")
+            # M8 print moved outside bounded_perturb block
+            if self.transport_correct_enable:
+                print(f"  - M8 TRANSPORT-CORRECTION DECOMPOSITION (Predictor-Corrector):")
+                print(f"    - 'Serial composition: Lagrangian transport followed by")
+                print(f"       Eulerian closure in the comoving frame.'")
+                print(f"    - Step 1 (Predictor): x' = x + Φ_L(x,t)")
+                if self.transport_correct_comoving:
+                    print(f"    - Step 2 (Corrector): Δ = Φ_E(x',t)  [COMOVING FRAME]")
+                else:
+                    print(f"    - Step 2 (Corrector): Δ = Φ_E(x,t)   [ORIGINAL FRAME - ablation]")
+                if self.transport_correct_learnable_beta:
+                    print(f"    - Step 3 (Update): x(t) = x' + β(x',t)·Δ  [LEARNABLE β]")
+                    print(f"    - β_max: {self.transport_correct_beta_max}")
+                    print(f"    - β_init: {self.transport_correct_beta_init}")
+                    print(f"    - β_budget: E[β] ≤ {self.transport_correct_beta_budget}")
+                    print(f"    - λ_budget: {self.transport_correct_lambda_budget}")
+                else:
+                    print(f"    - Step 3 (Update): x(t) = x' + ε·Δ  [FIXED ε]")
+                    print(f"    - ε: {self.transport_correct_eps}")
     
     def initialize_anchors(self, points: torch.Tensor) -> None:
         """
@@ -1190,6 +1875,69 @@ class AnchorDeformationNet(nn.Module):
             )  # [N, 3]
         
         return gaussian_displacements
+
+    def _quat_normalize(self, q: torch.Tensor) -> torch.Tensor:
+        return q / (torch.norm(q, dim=-1, keepdim=True) + self.s5_eps)
+
+    def _quat_from_matrix(self, R: torch.Tensor) -> torch.Tensor:
+        t = R[..., 0, 0] + R[..., 1, 1] + R[..., 2, 2]
+        r = torch.sqrt(torch.clamp(1.0 + t, min=self.s5_eps))
+        w = 0.5 * r
+        inv4w = 0.25 / (w + self.s5_eps)
+        x = (R[..., 2, 1] - R[..., 1, 2]) * inv4w
+        y = (R[..., 0, 2] - R[..., 2, 0]) * inv4w
+        z = (R[..., 1, 0] - R[..., 0, 1]) * inv4w
+        q = torch.stack([w, x, y, z], dim=-1)
+        return self._quat_normalize(q)
+
+    def _jacobian_sr_reference(
+        self,
+        gaussian_positions: torch.Tensor,
+        scales: torch.Tensor,
+        rotations: torch.Tensor,
+        anchor_positions: torch.Tensor,
+        anchor_displacements: torch.Tensor,
+        knn_idx: torch.Tensor,
+        knn_w: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        N, K = knn_idx.shape
+        pos_i = anchor_positions[knn_idx]  # [N, K, 3]
+        u_i = anchor_displacements[knn_idx]  # [N, K, 3]
+        w = knn_w.unsqueeze(-1)  # [N, K, 1]
+
+        x = gaussian_positions.unsqueeze(1)  # [N, 1, 3]
+        p = pos_i - x  # [N, K, 3]
+        u0 = (w * u_i).sum(dim=1, keepdim=True) / (w.sum(dim=1, keepdim=True) + self.s5_eps)  # [N, 1, 3]
+        du = u_i - u0  # [N, K, 3]
+
+        P = p.unsqueeze(-1)  # [N, K, 3, 1]
+        PT = p.unsqueeze(-2)  # [N, K, 1, 3]
+        W = knn_w.view(N, K, 1, 1)
+        A = (W * P @ PT).sum(dim=1)  # [N, 3, 3]
+        B = (W * du.unsqueeze(-1) @ PT).sum(dim=1)  # [N, 3, 3]
+
+        I = torch.eye(3, device=gaussian_positions.device, dtype=gaussian_positions.dtype).unsqueeze(0)
+        A_reg = A + (self.s5_eps * I)
+        J = torch.linalg.solve(A_reg, B).transpose(-1, -2)  # [N, 3, 3]
+        Fm = I + J
+
+        U, S, Vh = torch.linalg.svd(Fm)
+        Rm = U @ Vh
+        det = torch.det(Rm)
+        mask = det < 0
+        if mask.any():
+            U2 = U.clone()
+            U2[mask, :, 2] *= -1
+            Rm = U2 @ Vh
+            U = U2
+
+        log_s_iso = torch.log(torch.clamp(S, min=self.s5_eps)).mean(dim=-1, keepdim=True)  # [N, 1]
+        s_ref = scales * torch.exp(log_s_iso.expand_as(scales))
+
+        q_delta = self._quat_from_matrix(Rm)
+        q_ref = batch_quaternion_multiply(rotations, q_delta)
+        q_ref = self._quat_normalize(q_ref)
+        return s_ref, q_ref
     
     def forward(
         self,
@@ -1316,59 +2064,239 @@ class AnchorDeformationNet(nn.Module):
             elif self.fusion_mode == 'uncertainty_gated':
                 # ================================================================
                 # M1.2: Small Perturbation around V5's Optimal 99:1 Ratio
+                # s1: Per-Anchor extension (spatially-varying γᵢ)
                 # ================================================================
                 # KEY INSIGHT from experiments:
                 #   - V5 with α=0.99 (99% Anchor, 1% HexPlane) is OPTIMAL
                 #   - Any other ratio is worse
                 #   - This means 99:1 gradient ratio is also optimal for training!
                 #
-                # M1.0/M1.1 FAILURES:
-                #   - M1.0: β stayed at 0.01, no adaptation (just V5)
-                #   - M1.1: Gradient decoupling broke training dynamics
-                #
-                # M1.2 SOLUTION: Keep V5's gradient flow, add TINY perturbation γ
-                #   dx = (0.99 - γ) * dx_anchor + (0.01 + γ) * dx_hex
-                #   where |γ| ≤ γ_max (default 0.005, i.e., ±0.5% adjustment)
-                #
-                # γ is computed from uncertainty s_E:
+                # M1.2: Global γ from uncertainty s_E
                 #   γ = γ_max * tanh((τ - s_E) / λ)
-                #   - s_E high (uncertain) → γ < 0 → reduce HexPlane to 0.5%
-                #   - s_E low (confident) → γ > 0 → increase HexPlane to 1.5%
+                #
+                # s1: Per-anchor γᵢ(t) with spatial interpolation
+                #   1. Aggregate s_E(x,t) to anchors: s_E(i,t) = Σ wᵢ(x)·s_E(x,t) / Σ wᵢ(x)
+                #   2. Compute γᵢ = γ_max * tanh((τ - s_E(i,t)) / λ)
+                #   3. Interpolate to Gaussians: γ(x,t) = Σ wᵢ(x)·γᵢ
                 # ================================================================
                 
                 # Get s_E from HexPlane uncertainty head
                 s_E = self.original_deformation.get_last_s_E()  # [N, 1]
                 
+                # s0.2: Normalize s_E with EMA statistics
+                if s_E is not None and self.s0_normalize_se:
+                    s_E_mean = s_E.mean()
+                    s_E_var = s_E.var() + 1e-8
+                    
+                    # Update EMA
+                    if self._se_ema_mean is None:
+                        self._se_ema_mean = s_E_mean.detach()
+                        self._se_ema_var = s_E_var.detach()
+                    else:
+                        decay = self.s0_se_ema_decay
+                        self._se_ema_mean = decay * self._se_ema_mean + (1 - decay) * s_E_mean.detach()
+                        self._se_ema_var = decay * self._se_ema_var + (1 - decay) * s_E_var.detach()
+                    
+                    # Normalize
+                    s_E = (s_E - self._se_ema_mean) / (torch.sqrt(self._se_ema_var) + 1e-8)
+                
                 if s_E is None:
                     # Fallback: if s_E not computed, use pure V5 (γ=0)
                     gamma = torch.zeros_like(dx_hex[:, :1])
+                    self._last_gamma_anchor = None
+                elif self.per_anchor_gamma:
+                    # ============================================================
+                    # s1: Per-Anchor Small-Perturbation
+                    # ============================================================
+                    N = s_E.shape[0]
+                    M = self.num_anchors
+                    K = self.anchor_k
+                    
+                    # Step 1: Aggregate s_E(x,t) to anchors via scatter
+                    # s_E(i,t) = Σ_x wᵢ(x)·s_E(x,t) / (Σ_x wᵢ(x) + ε)
+                    s_E_flat = s_E.view(-1)  # [N]
+                    
+                    # Expand weights and indices for scatter
+                    knn_idx = self.knn_indices[:N]  # [N, K]
+                    knn_w = self.knn_weights[:N]    # [N, K]
+                    
+                    # Weighted s_E per (Gaussian, anchor) pair
+                    weighted_s_E = (s_E_flat.unsqueeze(1) * knn_w).view(-1)  # [N*K]
+                    flat_idx = knn_idx.view(-1)  # [N*K]
+                    flat_w = knn_w.view(-1)  # [N*K]
+                    
+                    # Scatter sum to anchors
+                    s_E_anchor_sum = torch.zeros(M, device=s_E.device, dtype=s_E.dtype)
+                    w_anchor_sum = torch.zeros(M, device=s_E.device, dtype=s_E.dtype)
+                    s_E_anchor_sum.scatter_add_(0, flat_idx, weighted_s_E)
+                    w_anchor_sum.scatter_add_(0, flat_idx, flat_w)
+                    
+                    # Normalize: s_E(i,t) = sum / (weight_sum + eps)
+                    s_E_anchor = s_E_anchor_sum / (w_anchor_sum + 1e-8)  # [M]
+                    
+                    # Step 2: Compute γᵢ using s0 gate type
+                    gate_input = (self.gate_tau - s_E_anchor) / (self.gate_lambda + 1e-8)
+                    if self.s0_gate_type == 'sigmoid':
+                        # s0.1a: γ = γ_max * sigmoid(...)  ∈ (0, γ_max)
+                        gamma_anchor = self.gamma_max * torch.sigmoid(gate_input)
+                    elif self.s0_gate_type == 'sigmoid_bipolar':
+                        # s0.1b: γ = γ_max * (2*sigmoid(...) - 1)  ∈ (-γ_max, γ_max)
+                        gamma_anchor = self.gamma_max * (2 * torch.sigmoid(gate_input) - 1)
+                    else:
+                        # Default (tanh): γ = γ_max * tanh(...)  ∈ (-γ_max, γ_max)
+                        gamma_anchor = self.gamma_max * torch.tanh(gate_input)
+                    # [M]
+                    
+                    # Step 3: Interpolate back to Gaussians: γ(x,t) = Σ wᵢ(x)·γᵢ
+                    gamma_neighbors = gamma_anchor[knn_idx]  # [N, K]
+                    gamma = (gamma_neighbors * knn_w).sum(dim=1, keepdim=True)  # [N, 1]
+                    
+                    # ============================================================
+                    # s1.1: Anchor Graph spatial smoothness
+                    # L_graph = Σ_{(i,j)∈E} (γᵢ - γⱼ)²
+                    # ============================================================
+                    if self.lambda_gamma_graph > 0:
+                        # Use anchor KNN graph as edge set E
+                        # anchor_knn_indices: [M, k] - each anchor's k nearest anchor neighbors
+                        if hasattr(self, 'anchor_knn_indices') and self.anchor_knn_indices is not None:
+                            anchor_knn = self.anchor_knn_indices  # [M, k]
+                            gamma_i = gamma_anchor.unsqueeze(1)  # [M, 1]
+                            gamma_j = gamma_anchor[anchor_knn]   # [M, k]
+                            graph_loss = ((gamma_i - gamma_j) ** 2).mean()
+                            self._last_gamma_graph_loss = self.lambda_gamma_graph * graph_loss
+                        else:
+                            # Fallback: compute anchor KNN on-the-fly
+                            anchor_pos = self.anchor_positions.detach()  # [M, 3]
+                            dist_sq = torch.cdist(anchor_pos, anchor_pos, p=2) ** 2  # [M, M]
+                            # Exclude self (set diagonal to inf)
+                            dist_sq.fill_diagonal_(float('inf'))
+                            _, anchor_knn = torch.topk(dist_sq, k=min(8, M-1), largest=False)  # [M, k]
+                            gamma_i = gamma_anchor.unsqueeze(1)  # [M, 1]
+                            gamma_j = gamma_anchor[anchor_knn]   # [M, k]
+                            graph_loss = ((gamma_i - gamma_j) ** 2).mean()
+                            self._last_gamma_graph_loss = self.lambda_gamma_graph * graph_loss
+                    else:
+                        self._last_gamma_graph_loss = None
+                    
+                    # ============================================================
+                    # s1.2: Temporal smoothness
+                    # L_temp = Σᵢ |γᵢ(t) - γᵢ(t-Δt)|²
+                    # ============================================================
+                    if self.lambda_gamma_temp > 0 and self._last_gamma_anchor_prev is not None:
+                        temp_loss = ((gamma_anchor - self._last_gamma_anchor_prev) ** 2).mean()
+                        self._last_gamma_temp_loss = self.lambda_gamma_temp * temp_loss
+                    else:
+                        self._last_gamma_temp_loss = None
+                    
+                    # Update previous gamma for next iteration
+                    self._last_gamma_anchor_prev = gamma_anchor.detach().clone()
+                    
+                    # Cache for logging
+                    self._last_gamma_anchor = gamma_anchor
                 else:
-                    # Compute γ from s_E: small perturbation around 0
-                    # γ = γ_max * tanh((τ - s_E) / λ)
-                    gamma = self.gamma_max * torch.tanh((self.gate_tau - s_E) / (self.gate_lambda + 1e-8))
+                    # Original M1.2: Global γ from s_E with s0 gate type
+                    gate_input = (self.gate_tau - s_E) / (self.gate_lambda + 1e-8)
+                    if self.s0_gate_type == 'sigmoid':
+                        # s0.1a: γ = γ_max * sigmoid(...)  ∈ (0, γ_max)
+                        gamma = self.gamma_max * torch.sigmoid(gate_input)
+                    elif self.s0_gate_type == 'sigmoid_bipolar':
+                        # s0.1b: γ = γ_max * (2*sigmoid(...) - 1)  ∈ (-γ_max, γ_max)
+                        gamma = self.gamma_max * (2 * torch.sigmoid(gate_input) - 1)
+                    else:
+                        # Default (tanh): γ = γ_max * tanh(...)  ∈ (-γ_max, γ_max)
+                        gamma = self.gamma_max * torch.tanh(gate_input)
+                    self._last_gamma_anchor = None
                 
                 # Cache for logging
                 self._last_s_E = s_E
                 self._last_gamma = gamma
-                hex_weight_effective = 0.01 + gamma
-                self._last_beta = hex_weight_effective  # For compatibility with logging
-                self._last_beta_mean = hex_weight_effective.mean().item()
                 
-                # M1.2 Fusion: V5 baseline (α=0.99) + small perturbation γ
-                # dx = (0.99 - γ) * dx_anchor + (0.01 + γ) * dx_hex
-                alpha_base = 0.99  # V5's optimal ratio - DO NOT CHANGE
-                hex_weight = (1 - alpha_base) + gamma    # 0.01 + γ
-                anchor_weight = alpha_base - gamma       # 0.99 - γ
+                # s0.3: Residual mode - Φ = Φ_L + β·Φ_E
+                if self.s0_residual_mode:
+                    # β = β_min + (β_max - β_min) * sigmoid((τ - s_E) / λ)
+                    gate_input = (self.gate_tau - s_E) / (self.gate_lambda + 1e-8)
+                    beta = self.s0_beta_min + (self.s0_beta_max - self.s0_beta_min) * torch.sigmoid(gate_input)
+                    hex_weight_effective = beta
+                    self._last_beta = beta
+                    self._last_beta_mean = beta.mean().item()
+                    
+                    # s0.3 Fusion: Φ = Φ_L + β·Φ_E (base + residual)
+                    hex_weight = beta
+                    anchor_weight = torch.ones_like(beta)  # Anchor is always 1.0
+                else:
+                    hex_weight_effective = 0.01 + gamma
+                    self._last_beta = hex_weight_effective  # For compatibility with logging
+                    self._last_beta_mean = hex_weight_effective.mean().item()
+                    
+                    # M1.2 Fusion: V5 baseline (α=0.99) + small perturbation γ
+                    # dx = (0.99 - γ) * dx_anchor + (0.01 + γ) * dx_hex
+                    alpha_base = 0.99  # V5's optimal ratio - DO NOT CHANGE
+                    hex_weight = (1 - alpha_base) + gamma    # 0.01 + γ
+                    anchor_weight = alpha_base - gamma       # 0.99 - γ
                 
-                dx_combined = anchor_weight * dx_anchor + hex_weight * dx_hex
-                ds_combined = hex_weight * ds_hex  # Scale from HexPlane only
-                dr_combined = hex_weight * dr_hex  # Rotation from HexPlane only
+                # ================================================================
+                # M7: High-Pass Structural Decomposition on M1.2 (when hpass_enable=True)
+                # ================================================================
+                # Same as M6 but applied to M1.2's uncertainty-gated fusion:
+                # r = Φ_E - Φ_L, decompose into r_low + r_high
+                # Φ = Φ_L + (hex_weight) * (r_high + tied_factor * r_low)
+                # When tied: tied_factor = 1.0 → degenerates to original M1.2
+                # ================================================================
+                
+                if self.hpass_enable and self.lp_operator is not None:
+                    # Compute residual r = Φ_E - Φ_L
+                    r = dx_hex - dx_anchor  # [N, 3]
+                    
+                    # Decompose into low/high frequency
+                    r_low, r_high = self.lp_operator.get_high_pass(
+                        r=r,
+                        knn_indices=self.knn_indices,
+                        knn_weights=self.knn_weights,
+                        anchor_positions=self.anchor_positions.detach(),
+                        anchor_graph=None
+                    )
+                    
+                    # Compute tied_factor based on mode
+                    if self.hpass_eps_low_mode == 'zero':
+                        # Hard high-pass: only high-frequency contributes
+                        tied_factor = 0.0
+                    elif self.hpass_eps_low_mode == 'tied':
+                        # Sanity check: same weight for both (degenerates to M1.2)
+                        tied_factor = 1.0
+                    else:  # bounded_small
+                        # Small learnable budget for low-frequency (relative to high)
+                        # Use rho_low to compute a ratio
+                        tied_factor = torch.sigmoid(self.rho_low).item() if self.rho_low is not None else 0.5
+                    
+                    # M7 Fusion: Φ = Φ_L + hex_weight * (r_high + tied_factor * r_low)
+                    # When tied_factor=1.0: Φ = Φ_L + hex_weight * r = Φ_L + hex_weight * (Φ_E - Φ_L)
+                    #                         = (1 - hex_weight) * Φ_L + hex_weight * Φ_E  (exactly M1.2)
+                    dx_combined = dx_anchor + hex_weight * (r_high + tied_factor * r_low)
+                    
+                    # For scale/rotation, use original M1.2 logic
+                    ds_combined = hex_weight * ds_hex
+                    dr_combined = hex_weight * dr_hex
+                    
+                    # Cache for logging (reuse M6 logging fields)
+                    self._last_eps_high = hex_weight.mean().item() if isinstance(hex_weight, torch.Tensor) else hex_weight
+                    self._last_eps_low = (hex_weight * tied_factor).mean().item() if isinstance(hex_weight, torch.Tensor) else (hex_weight * tied_factor)
+                    
+                    with torch.no_grad():
+                        self._last_E_low = torch.norm(r_low, dim=-1).mean().item()
+                        self._last_E_high = torch.norm(r_high, dim=-1).mean().item()
+                        self._last_E_ratio = self._last_E_low / (self._last_E_high + 1e-8)
+                else:
+                    # Original M1.2 fusion without hpass
+                    dx_combined = anchor_weight * dx_anchor + hex_weight * dx_hex
+                    ds_combined = hex_weight * ds_hex  # Scale from HexPlane only
+                    dr_combined = hex_weight * dr_hex  # Rotation from HexPlane only
                 
                 self._last_balance_alpha = None
             
             elif self.fusion_mode == 'bounded_perturb':
                 # ================================================================
                 # M2.1: Learnable Weighted Average + Trust-Region Schedule
+                # M5: Phase-Aware Trust-Region ε(t) (when phase_eps_enable=True)
                 # ================================================================
                 # M2.05 formula: dx = (1-ε)*dx_anchor + ε*dx_hex
                 #
@@ -1376,16 +2304,25 @@ class AnchorDeformationNet(nn.Module):
                 #   schedule_mode="none"       → M2.05 behavior
                 #   schedule_mode="freeze_rho" → ρ frozen for first N steps
                 #   schedule_mode="warmup_cap" → ε_eff = min(ε_raw, ε_max * warmup_ratio)
+                #
+                # M5 upgrades ε from scalar to time-conditioned ε(t):
+                #   ε(t) = ε_max * sigmoid(g(t))
                 # ================================================================
                 
-                # Step 1: Compute raw ε = ε_max * sigmoid(ρ)
-                eps_raw = self.eps_max * torch.sigmoid(self.rho)
-                self._last_eps_raw = eps_raw.item()
-                
-                # Step 2: Apply trust-region schedule to get ε_eff
-                # Note: global_step is passed via self._current_step (set by train.py)
+                # Step 1: Compute raw ε (M5: time-conditioned, else: scalar)
                 current_step = getattr(self, '_current_step', 0)
                 
+                if self.phase_eps_enable and self.phase_epsilon is not None:
+                    # M5: Phase-aware trust-region ε(t)
+                    eps_raw = self.phase_epsilon(time_emb)
+                    self._last_eps_raw = eps_raw.item() if isinstance(eps_raw, torch.Tensor) else eps_raw
+                else:
+                    # M2.1: Scalar ε = ε_max * sigmoid(ρ)
+                    eps_raw = self.eps_max * torch.sigmoid(self.rho)
+                    self._last_eps_raw = eps_raw.item()
+                
+                # Step 2: Apply trust-region schedule to get ε_eff
+                # M5 inherits M2.1a freeze logic: freeze g parameters for first freeze_steps
                 if self.schedule_mode == 'none':
                     # M2.05 behavior: no schedule
                     eps_eff = eps_raw
@@ -1393,8 +2330,8 @@ class AnchorDeformationNet(nn.Module):
                     self._is_frozen = False
                     
                 elif self.schedule_mode == 'freeze_rho':
-                    # Hard freeze: ε stays at eps_raw, but ρ gradients are zeroed in train.py
-                    # Here we just use eps_raw as-is
+                    # Hard freeze: ε stays at eps_raw, but ρ/g gradients are zeroed in train.py
+                    # For M5: PhaseEpsilon parameters are also frozen during freeze_steps
                     eps_eff = eps_raw
                     self._is_frozen = (current_step < self.freeze_steps)
                     self._last_warmup_ratio = 0.0 if self._is_frozen else 1.0
@@ -1402,8 +2339,9 @@ class AnchorDeformationNet(nn.Module):
                 elif self.schedule_mode == 'warmup_cap':
                     # Soft cap: ε_eff = min(ε_raw, ε_max * warmup_ratio)
                     warmup_ratio = min(current_step / max(self.warmup_steps, 1), 1.0)
-                    eps_cap = self.eps_max * warmup_ratio
-                    eps_eff = torch.min(eps_raw, torch.tensor(eps_cap, device=eps_raw.device))
+                    eps_max_ref = self.phase_epsilon.eps_max if self.phase_eps_enable and self.phase_epsilon else self.eps_max
+                    eps_cap = eps_max_ref * warmup_ratio
+                    eps_eff = torch.min(eps_raw, torch.tensor(eps_cap, device=eps_raw.device) if not isinstance(eps_raw, torch.Tensor) else torch.tensor(eps_cap, device=eps_raw.device))
                     self._last_warmup_ratio = warmup_ratio
                     self._is_frozen = False
                 else:
@@ -1437,8 +2375,16 @@ class AnchorDeformationNet(nn.Module):
                 self._last_time = time_emb if time_emb is not None else None
                 
                 # Apply H(·) based on residual_mode
-                if self.residual_mode == 'tanh':
-                    # M2/M2.1 baseline: H(Δ) = tanh(Δ)
+                if self.residual_mode == 'none':
+                    # M2.1a baseline: NO normalization (original working formula)
+                    # Φ = (1-ε)·Φ_L + ε·Φ_E
+                    dx_H = dx_hex
+                    ds_H = ds_hex
+                    dr_H = dr_hex
+                    
+                elif self.residual_mode == 'tanh':
+                    # M2.2 variant: H(Δ) = tanh(Δ) - bounds to [-1, 1]
+                    # WARNING: This destroys magnitude information!
                     dx_H = torch.tanh(dx_hex)
                     ds_H = torch.tanh(ds_hex)
                     dr_H = torch.tanh(dr_hex)
@@ -1470,10 +2416,10 @@ class AnchorDeformationNet(nn.Module):
                     dr_H = dr_hex / norm_dr
                     
                 else:
-                    # Unknown mode, fallback to tanh
-                    dx_H = torch.tanh(dx_hex)
-                    ds_H = torch.tanh(ds_hex)
-                    dr_H = torch.tanh(dr_hex)
+                    # Unknown mode, fallback to none (safe default)
+                    dx_H = dx_hex
+                    ds_H = ds_hex
+                    dr_H = dr_hex
                 
                 # Compute norms after normalization (for logging)
                 with torch.no_grad():
@@ -1481,13 +2427,160 @@ class AnchorDeformationNet(nn.Module):
                     self._last_mean_norm_H = norm_H_dx
                 
                 # Step 3: Weighted average fusion with normalized residuals
-                alpha = 1.0 - eps_eff
+                # ================================================================
+                # M6: High-Pass Structural Decomposition (when hpass_enable=True)
+                # ================================================================
+                # "Unlike penalty-based regularization, we enforce a structural
+                #  frequency split of the Eulerian residual in the forward pass,
+                #  allocating a bounded correction budget to the high-frequency
+                #  component to prevent shortcut learning."
+                #
+                # r = H(Φ_E) - Φ_L  (normalized Eulerian residual)
+                # Note: We work with normalized residuals (dx_H) after H(·) to preserve M2.2
+                # r_low = LP(r), r_high = r - r_low
+                # Φ = Φ_L + ε_high * r_high + ε_low * r_low
+                # ================================================================
                 
-                dx_combined = alpha * dx_anchor + eps_eff * dx_H
-                ds_combined = eps_eff * ds_H  # Scale from HexPlane only
-                dr_combined = eps_eff * dr_H  # Rotation from HexPlane only
+                if self.hpass_enable and self.lp_operator is not None:
+                    # Compute residual r = Φ_E - Φ_L (Eulerian over Lagrangian)
+                    # This definition guarantees exact degeneration to M2.1a when:
+                    #   eps_low == eps_high == eps_eff
+                    r = dx_H - dx_anchor  # [N, 3]
+                    
+                    # Decompose into low/high frequency
+                    r_low, r_high = self.lp_operator.get_high_pass(
+                        r=r,
+                        knn_indices=self.knn_indices,
+                        knn_weights=self.knn_weights,
+                        anchor_positions=self.anchor_positions.detach(),
+                        anchor_graph=None
+                    )
+                    
+                    # Compute ε_high (use rho_high instead of rho)
+                    eps_high_raw = self.hpass_eps_high_max * torch.sigmoid(self.rho_high)
+                    
+                    # Apply freeze schedule to ε_high
+                    if self._is_frozen:
+                        eps_high = torch.tensor(self.hpass_eps_high_init, device=eps_high_raw.device)
+                    else:
+                        eps_high = eps_high_raw
+                    
+                    # Compute ε_low based on mode
+                    if self.hpass_eps_low_mode == 'zero':
+                        # Hard high-pass: only high-frequency contributes
+                        eps_low = torch.tensor(0.0, device=r.device)
+                    elif self.hpass_eps_low_mode == 'tied':
+                        # Sanity check: same as baseline (should give identical results)
+                        eps_low = eps_high
+                    else:  # bounded_small
+                        # Small learnable budget for low-frequency
+                        eps_low_raw = self.hpass_eps_low_max * torch.sigmoid(self.rho_low)
+                        if self._is_frozen:
+                            eps_low = torch.tensor(self.hpass_eps_low_init, device=eps_low_raw.device)
+                        else:
+                            eps_low = eps_low_raw
+                    
+                    # Dual-budget fusion: Φ = Φ_L + ε_high * r_high + ε_low * r_low
+                    dx_combined = dx_anchor + eps_high * r_high + eps_low * r_low
+                    
+                    # For scale/rotation, use same eps_high (simplification)
+                    ds_combined = eps_high * ds_H
+                    dr_combined = eps_high * dr_H
+                    
+                    # Cache for logging
+                    self._last_eps_high = eps_high.item() if isinstance(eps_high, torch.Tensor) else eps_high
+                    self._last_eps_low = eps_low.item() if isinstance(eps_low, torch.Tensor) else eps_low
+                    
+                    with torch.no_grad():
+                        self._last_E_low = torch.norm(r_low, dim=-1).mean().item()
+                        self._last_E_high = torch.norm(r_high, dim=-1).mean().item()
+                        self._last_E_ratio = self._last_E_low / (self._last_E_high + 1e-8)
+                    
+                    # For compatibility with existing logging
+                    self._last_balance_alpha = (1.0 - eps_high).item() if isinstance(eps_high, torch.Tensor) else (1.0 - eps_high)
+                    
+                else:
+                    # Original M2.1/M2.2/M5 fusion without M6
+                    alpha = 1.0 - eps_eff
+                    
+                    dx_combined = alpha * dx_anchor + eps_eff * dx_H
+                    ds_combined = eps_eff * ds_H  # Scale from HexPlane only
+                    dr_combined = eps_eff * dr_H  # Rotation from HexPlane only
+                    
+                    self._last_balance_alpha = alpha.item() if isinstance(alpha, torch.Tensor) else alpha
+            
+            elif self.transport_correct_enable:
+                # ================================================================
+                # M8: Transport-Correction Decomposition (Predictor-Corrector)
+                # ================================================================
+                # Serial composition instead of parallel blending:
+                #   1. Predictor (Lagrangian transport):  x' = x + Φ_L(x,t)
+                #   2. Corrector (Eulerian at x'):        Δ = Φ_E(x',t)
+                #   3. Update (budgeted residual):        x(t) = x' + ε·Δ
+                #
+                # Key insight: Residual evaluated in comoving frame (at x') cannot
+                # learn large-scale transport already captured by Φ_L.
+                # ================================================================
                 
-                self._last_balance_alpha = alpha.item() if isinstance(alpha, torch.Tensor) else alpha
+                # Step 1: Lagrangian transport (already computed: dx_anchor)
+                # x' = x + dx_anchor (transported position)
+                x_transported = gaussian_positions + dx_anchor
+                
+                # Step 2: Compute Eulerian corrector
+                if self.transport_correct_comoving:
+                    # M8: Query HexPlane at transported position x' (COMOVING FRAME)
+                    # This is the key innovation - residual is evaluated where the
+                    # Lagrangian predictor has already moved the point
+                    means3D_corrector, scales_corrector, rotations_corrector = self.original_deformation(
+                        x_transported,  # Query at transported position x'
+                        scales,
+                        rotations,
+                        density,
+                        time_emb
+                    )
+                    # Δ = Φ_E(x') - x' (corrector displacement relative to transported)
+                    delta_corrector = means3D_corrector - x_transported
+                else:
+                    # Ablation: Query HexPlane at original position x (ORIGINAL FRAME)
+                    # This should be worse - included for ablation study
+                    delta_corrector = dx_hex  # Already computed earlier
+                
+                ds_corrector = scales_corrector - scales if self.transport_correct_comoving else ds_hex
+                dr_corrector = rotations_corrector - rotations if self.transport_correct_comoving else dr_hex
+                
+                # Step 3: Apply budgeted residual
+                if self.transport_correct_learnable_beta and self.beta_net is not None:
+                    # Learnable β(x',t) with budget constraint
+                    # Input: concatenate transported position and time
+                    t_expanded = time_emb[:, 0:1] if time_emb.dim() > 1 else time_emb.unsqueeze(-1)
+                    beta_input = torch.cat([x_transported, t_expanded.expand(x_transported.shape[0], 1)], dim=-1)
+                    beta_raw = self.beta_net(beta_input)  # [N, 1], in [0, 1] due to sigmoid
+                    beta = self.transport_correct_beta_max * beta_raw  # Scale to [0, beta_max]
+                    
+                    # Compute budget penalty: L_budget = λ * max(0, E[β] - budget)^2
+                    beta_mean = beta.mean()
+                    budget_violation = torch.relu(beta_mean - self.transport_correct_beta_budget)
+                    self._last_tc_budget_loss = self.transport_correct_lambda_budget * budget_violation ** 2
+                    
+                    eps_effective = beta
+                    self._last_tc_eps = beta_mean.item()
+                else:
+                    # Fixed ε (matches V5's 0.01 finding)
+                    eps_effective = self.transport_correct_eps
+                    self._last_tc_eps = self.transport_correct_eps
+                    self._last_tc_budget_loss = None
+                
+                # Final update: x(t) = x' + ε·Δ = x + dx_anchor + ε·Δ
+                dx_combined = dx_anchor + eps_effective * delta_corrector
+                ds_combined = eps_effective * ds_corrector
+                dr_combined = eps_effective * dr_corrector
+                
+                # Cache for logging
+                with torch.no_grad():
+                    self._last_tc_delta_norm = torch.norm(delta_corrector, dim=-1).mean().item()
+                    self._last_tc_transport_norm = torch.norm(dx_anchor, dim=-1).mean().item()
+                
+                self._last_balance_alpha = None
             
             elif self.use_orthogonal_projection:
                 # ================================================================
@@ -1554,9 +2647,81 @@ class AnchorDeformationNet(nn.Module):
                 else:
                     # Normal case: use sigmoid for smooth interpolation
                     alpha = torch.sigmoid(self.balance_logit)  # α ∈ (0, 1)
-                    dx_combined = (1 - alpha) * dx_hex + alpha * dx_anchor
-                    ds_combined = (1 - alpha) * ds_hex
-                    dr_combined = (1 - alpha) * dr_hex
+                    wA_used = None
+                    if self.s4_dx_anchor_weight is not None and self.s4_dx_anchor_weight >= 0:
+                        # s4.2/s4.4: override position fusion weight
+                        # dx = (1-wA) * dx_hex + wA * dx_anchor
+                        wA = float(self.s4_dx_anchor_weight)
+                        wA_used = wA
+                        dx_combined = (1 - wA) * dx_hex + wA * dx_anchor
+                    elif self.s4_1_anchor_only_position:
+                        # s4.1: dx = α * dx_anchor (remove HexPlane position contribution)
+                        wA_used = alpha
+                        dx_combined = alpha * dx_anchor
+                    else:
+                        wA_used = alpha
+                        dx_combined = (1 - alpha) * dx_hex + alpha * dx_anchor
+                    # s2 series: optionally extend anchor fusion to scale/rotation
+                    # s3 series: optionally release scale/rotation from (1-α) multiplier
+                    if self.s3_release_scale:
+                        # s3.1/s3.3: ds = ds_hex (not multiplied by 1-α)
+                        ds_combined = ds_hex
+                    elif self.s2_anchor_to_scale:
+                        ds_combined = (1 - alpha) * ds_hex + alpha * dx_anchor
+                    else:
+                        ds_combined = (1 - alpha) * ds_hex
+                    
+                    if self.s3_zero_rotation:
+                        # s3.4+: dr = 0 (completely disable HexPlane rotation)
+                        dr_combined = torch.zeros_like(dr_hex)
+                    elif self.s3_release_rotation:
+                        # s3.2/s3.3: dr = dr_hex (not multiplied by 1-α)
+                        dr_combined = dr_hex
+                    elif self.s2_anchor_to_rotation:
+                        # dr_hex is quaternion [N, 4], dx_anchor is [N, 3], pad with 0
+                        dx_anchor_4d = torch.cat([dx_anchor, torch.zeros_like(dx_anchor[:, :1])], dim=1)
+                        dr_combined = (1 - alpha) * dr_hex + alpha * dx_anchor_4d
+                    else:
+                        dr_combined = (1 - alpha) * dr_hex
+
+                    if self.s5_rot_nlerp or self.s5_scale_log_fusion:
+                        wA = float(wA_used) if wA_used is not None else alpha
+                        s_ref = scales
+                        q_ref = rotations
+                        if self.s5_jacobian_sr:
+                            k = min(int(self.s5_jacobian_k), self.knn_indices.shape[1])
+                            s_ref, q_ref = self._jacobian_sr_reference(
+                                gaussian_positions=gaussian_positions,
+                                scales=scales,
+                                rotations=rotations,
+                                anchor_positions=self.anchor_positions,
+                                anchor_displacements=anchor_displacements,
+                                knn_idx=self.knn_indices[:gaussian_positions.shape[0], :k],
+                                knn_w=self.knn_weights[:gaussian_positions.shape[0], :k],
+                            )
+
+                        if self.s5_scale_log_fusion:
+                            log_s_hex = torch.log(torch.clamp(scales_hex, min=self.s5_eps))
+                            log_s_ref = torch.log(torch.clamp(s_ref, min=self.s5_eps))
+                            scales_fused = torch.exp((1 - wA) * log_s_hex + wA * log_s_ref)
+                            ds_combined = scales_fused - scales
+
+                        if self.s5_rot_nlerp:
+                            q_hex = self._quat_normalize(rotations_hex)
+                            q_ref = self._quat_normalize(q_ref)
+                            q_fused = self._quat_normalize((1 - wA) * q_hex + wA * q_ref)
+                            dr_combined = q_fused - rotations
+
+                    # s4.2/s4.3: optional override for rotation weight
+                    # Only apply when rotation is not explicitly disabled/released/extended.
+                    if (
+                        self.s4_dr_hex_weight is not None and self.s4_dr_hex_weight >= 0
+                        and (not self.s3_zero_rotation)
+                        and (not self.s3_release_rotation)
+                        and (not self.s2_anchor_to_rotation)
+                    ):
+                        k = float(self.s4_dr_hex_weight)
+                        dr_combined = k * dr_hex
                     alpha = alpha.item()
                 self._last_balance_alpha = alpha  # Cache for logging
             else:
@@ -1767,6 +2932,59 @@ class AnchorDeformationNet(nn.Module):
         loss = (dx_diff ** 2).sum(dim=-1).mean()
         
         return loss
+    
+    def compute_phase_eps_smooth_loss(self) -> torch.Tensor:
+        """
+        M5: Compute temporal smoothness prior L_smooth for phase-aware ε(t).
+        
+        L_smooth = mean_k (ε_{k+1} - ε_k)^2
+        
+        This prevents per-frame overfitting and encourages smooth ε(t) curves
+        across respiratory phases.
+        
+        Returns:
+            loss: Phase epsilon smoothness loss (scalar)
+        """
+        if not self.phase_eps_enable or self.phase_epsilon is None:
+            return torch.tensor(0.0, device=self.anchor_positions.device)
+        
+        L_smooth = self.phase_epsilon.compute_smooth_loss()
+        self._last_phase_eps_smooth_loss = L_smooth.item()
+        
+        return L_smooth
+    
+    def get_phase_eps_stats(self) -> dict:
+        """
+        M5: Get phase epsilon statistics for logging.
+        
+        Returns:
+            dict with mode, mean_eps, min_eps, max_eps, std_eps, L_smooth
+        """
+        if not self.phase_eps_enable or self.phase_epsilon is None:
+            return {}
+        
+        stats = self.phase_epsilon.get_stats()
+        stats['mode'] = self.phase_epsilon.mode
+        stats['L_smooth'] = self._last_phase_eps_smooth_loss or 0.0
+        stats['is_frozen'] = self._is_frozen
+        
+        return stats
+    
+    def get_phase_eps_curve(self, num_samples: int = 50) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        M5: Get ε(t) curve for visualization.
+        
+        Args:
+            num_samples: Number of time samples (for tiny_mlp mode)
+        
+        Returns:
+            t_values: Time values [T] or [num_samples]
+            eps_values: Corresponding ε values
+        """
+        if not self.phase_eps_enable or self.phase_epsilon is None:
+            return None, None
+        
+        return self.phase_epsilon.get_all_eps_values(num_samples)
     
     def compute_consistency_loss(self, time_emb: torch.Tensor) -> torch.Tensor:
         """
@@ -2327,6 +3545,109 @@ class AnchorDeformationNet(nn.Module):
             'mean_norm_E': self._last_mean_norm_E,
             'mean_norm_H': self._last_mean_norm_H
         }
+    
+    def get_m6_statistics(self) -> dict:
+        """
+        M6: Get high-pass structural decomposition statistics for logging.
+        
+        Returns:
+            Dictionary with:
+                - eps_high: High-frequency budget
+                - eps_low: Low-frequency budget
+                - E_low: Mean ||r_low||
+                - E_high: Mean ||r_high||
+                - E_ratio: E_low / (E_high + 1e-8)
+                - eps_low_mode: Current eps_low mode
+                - hpass_k: Number of neighbors for LP
+        """
+        if not self.hpass_enable or self.lp_operator is None:
+            return {}
+        
+        return {
+            'eps_high': self._last_eps_high,
+            'eps_low': self._last_eps_low,
+            'E_low': self._last_E_low,
+            'E_high': self._last_E_high,
+            'E_ratio': self._last_E_ratio,
+            'eps_low_mode': self.hpass_eps_low_mode,
+            'hpass_k': self.hpass_k,
+            'rho_high': self.rho_high.item() if self.rho_high is not None else None,
+            'rho_low': self.rho_low.item() if self.rho_low is not None else None,
+            'is_frozen': self._is_frozen
+        }
+    
+    def get_m8_statistics(self) -> dict:
+        """
+        M8: Get Transport-Correction statistics for logging.
+        
+        Returns:
+            Dictionary with:
+                - eps: Effective ε or mean β
+                - delta_norm: Mean ||Δ|| (corrector magnitude)
+                - transport_norm: Mean ||Φ_L|| (predictor magnitude)
+                - comoving: Whether using comoving frame
+                - learnable_beta: Whether β is learnable
+                - budget_loss: Budget violation penalty (if learnable)
+        """
+        if not self.transport_correct_enable:
+            return {}
+        
+        return {
+            'eps': self._last_tc_eps,
+            'delta_norm': self._last_tc_delta_norm,
+            'transport_norm': self._last_tc_transport_norm,
+            'comoving': self.transport_correct_comoving,
+            'learnable_beta': self.transport_correct_learnable_beta,
+            'budget_loss': self._last_tc_budget_loss.item() if self._last_tc_budget_loss is not None else None,
+            'beta_budget': self.transport_correct_beta_budget,
+            'beta_max': self.transport_correct_beta_max
+        }
+    
+    def get_s1_statistics(self) -> dict:
+        """
+        s1/s1.1/s1.2: Get per-anchor gamma statistics for logging.
+        
+        Returns:
+            Dictionary with:
+                - gamma_mean: Mean γ across anchors
+                - gamma_std: Std of γ across anchors
+                - gamma_min: Min γ
+                - gamma_max: Max γ
+                - graph_loss: s1.1 spatial smoothness loss (if enabled)
+                - temp_loss: s1.2 temporal smoothness loss (if enabled)
+        """
+        if not self.per_anchor_gamma or self._last_gamma_anchor is None:
+            return {}
+        
+        gamma = self._last_gamma_anchor
+        return {
+            'gamma_mean': gamma.mean().item(),
+            'gamma_std': gamma.std().item(),
+            'gamma_min': gamma.min().item(),
+            'gamma_max': gamma.max().item(),
+            'graph_loss': self._last_gamma_graph_loss.item() if self._last_gamma_graph_loss is not None else None,
+            'temp_loss': self._last_gamma_temp_loss.item() if self._last_gamma_temp_loss is not None else None,
+            'lambda_graph': self.lambda_gamma_graph,
+            'lambda_temp': self.lambda_gamma_temp
+        }
+    
+    def get_s1_loss(self) -> torch.Tensor:
+        """
+        s1.1/s1.2: Get combined regularization loss for per-anchor gamma.
+        
+        Returns:
+            Total regularization loss (graph + temporal), or None if not enabled
+        """
+        if not self.per_anchor_gamma:
+            return None
+        
+        total_loss = None
+        if self._last_gamma_graph_loss is not None:
+            total_loss = self._last_gamma_graph_loss if total_loss is None else total_loss + self._last_gamma_graph_loss
+        if self._last_gamma_temp_loss is not None:
+            total_loss = self._last_gamma_temp_loss if total_loss is None else total_loss + self._last_gamma_temp_loss
+        
+        return total_loss
     
     def should_freeze_rho(self) -> bool:
         """

@@ -880,6 +880,147 @@ class ModelHiddenParams(ParamGroup):
         self.gamma_max = 0.005  # Max perturbation (0.005 = ±0.5%)
         
         # ====================================================================
+        # s0: Gate Function Variants for M1.2
+        # ====================================================================
+        # Current M1.2 uses: γ = γ_max * tanh((τ - s_E) / λ)
+        # Problem: tanh saturates easily → γ ≈ γ_max most of the time
+        #
+        # s0.1a: Sigmoid (positive only)
+        #   γ = γ_max * sigmoid((τ - s_E) / λ)
+        #   Range: (0, γ_max), no negative γ, smoother transition
+        #
+        # s0.1b: Sigmoid bipolar (centered at 0)
+        #   γ = γ_max * (2*sigmoid((τ - s_E) / λ) - 1)
+        #   Range: (-γ_max, γ_max), softer saturation than tanh
+        #
+        # s0.2: Normalized s_E with EMA statistics
+        #   ŝ_E = (s_E - μ) / (σ + eps), where μ/σ are EMA
+        #   γ = γ_max * tanh((τ - ŝ_E) / λ)
+        #   Goal: Make τ more stable across different runs
+        #
+        # s0.3: Residual amplitude control (alternative formulation)
+        #   Φ = Φ_L + β(s_E) * Φ_E
+        #   β(s_E) = β_min + (β_max - β_min) * sigmoid((τ - s_E) / λ)
+        #   Cleaner "base + residual" structure
+        # ====================================================================
+        self.s0_gate_type = 'tanh'  # Options: 'tanh', 'sigmoid', 'sigmoid_bipolar'
+        self.s0_normalize_se = False  # s0.2: Normalize s_E with EMA
+        self.s0_se_ema_decay = 0.99   # s0.2: EMA decay for mean/std
+        self.s0_residual_mode = False # s0.3: Use residual formulation Φ = Φ_L + β*Φ_E
+        self.s0_beta_min = 0.005      # s0.3: Minimum residual weight
+        self.s0_beta_max = 0.015      # s0.3: Maximum residual weight
+        
+        # ====================================================================
+        # s1: Per-Anchor Small-Perturbation (spatially-varying γ)
+        # ====================================================================
+        # Goal: Verify if per-anchor γᵢ brings stable gains over global γ.
+        #
+        # Each anchor i has: γᵢ(t) ∈ [-γ_max, γ_max]
+        # Propagate to Gaussians via KNN: γ(x,t) = Σ wᵢ(x)·γᵢ(t)
+        # Fusion: Φ = (0.99 - γ(x,t))·Φ_L + (0.01 + γ(x,t))·Φ_E
+        #
+        # s_E(i,t) is aggregated from sampled points:
+        #   s_E(i,t) = Σ_x wᵢ(x)·s_E(x,t) / (Σ_x wᵢ(x) + ε)
+        #
+        # s1.1: + Anchor Graph spatial smoothness
+        #   L_graph = Σ_{(i,j)∈E} (γᵢ - γⱼ)²
+        #   Prevents checkerboard gate patterns between adjacent anchors
+        #
+        # s1.2: + Temporal smoothness
+        #   L_temp = Σᵢ |γᵢ(t) - γᵢ(t-Δt)|²
+        #   Suppresses flickering across frames
+        # ====================================================================
+        self.per_anchor_gamma = False  # Enable per-anchor γᵢ (s1 mode)
+        self.lambda_gamma_graph = 0.0  # s1.1: Weight for spatial smoothness (try 0.01-0.1)
+        self.lambda_gamma_temp = 0.0   # s1.2: Weight for temporal smoothness (try 0.01-0.1)
+        self.gamma_temp_dt = 0.1       # s1.2: Time delta for temporal smoothness
+
+        self.s1_4 = False
+        
+        # ====================================================================
+        # s2: Anchor Fusion for Scale/Rotation (extend V5 to ds/dr)
+        # ====================================================================
+        # V5 baseline:
+        #   dx = (1-α)*dx_hex + α*dx_anchor
+        #   ds = (1-α)*ds_hex
+        #   dr = (1-α)*dr_hex
+        #
+        # s2.1: Extend anchor fusion to scale
+        #   ds = (1-α)*ds_hex + α*dx_anchor
+        #
+        # s2.2: Extend anchor fusion to rotation
+        #   dr = (1-α)*dr_hex + α*dx_anchor
+        #
+        # s2.3: Both scale and rotation use anchor
+        #   ds = (1-α)*ds_hex + α*dx_anchor
+        #   dr = (1-α)*dr_hex + α*dx_anchor
+        # ====================================================================
+        self.s2_anchor_to_scale = False    # s2.1/s2.3: Add α*dx_anchor to ds
+        self.s2_anchor_to_rotation = False # s2.2/s2.3: Add α*dx_anchor to dr
+        
+        # ====================================================================
+        # s3: Release Scale/Rotation from (1-α) Multiplier
+        # ====================================================================
+        # V5 baseline:
+        #   dx = (1-α)*dx_hex + α*dx_anchor
+        #   ds = (1-α)*ds_hex
+        #   dr = (1-α)*dr_hex
+        #
+        # s3.1: Release scale from (1-α)
+        #   ds = ds_hex
+        #
+        # s3.2: Release rotation from (1-α)
+        #   dr = dr_hex
+        #
+        # s3.3: Both released
+        #   ds = ds_hex
+        #   dr = dr_hex
+        # ====================================================================
+        self.s3_release_scale = False    # s3.1/s3.3: ds = ds_hex (not multiplied by 1-α)
+        self.s3_release_rotation = False # s3.2/s3.3: dr = dr_hex (not multiplied by 1-α)
+        self.s3_zero_rotation = False    # s3.4: dr = 0 (completely disable HexPlane rotation)
+
+        # ====================================================================
+        # s4.1: Anchor-Only Position Field (on top of s3.1)
+        # ====================================================================
+        # Motivation: isolate the effect of the Lagrangian (Anchor) transport on
+        # position by removing HexPlane position contribution.
+        #
+        # Starting from s3.1 (scale released):
+        #   ds = ds_hex
+        # We further modify the position field to:
+        #   dx = α * dx_anchor
+        # where α is the same learnable balance coefficient as V5.
+        #
+        # Note:
+        # - This does NOT change how ds/dr are computed (controlled by s3/s2 flags)
+        # - This only affects the V5 learnable_balance fusion branch
+        # ====================================================================
+        self.s4_1_anchor_only_position = False  # s4.1: dx = α * dx_anchor
+
+        self.s4_dx_anchor_weight = -1.0  # s4.2/s4.4: override dx fusion weight wA (dx = (1-wA)dx_hex + wA dx_anchor), -1 disables
+        self.s4_dr_hex_weight = -1.0     # s4.2/s4.3: override rotation weight k (dr = k * dr_hex), -1 disables
+
+        # ====================================================================
+        # s5: Extend dx fusion idea to ds/dr (step-by-step)
+        # ====================================================================
+        # s5.1: Rotation fusion on unit quaternions via nlerp (absolute rotation blend)
+        #   q_new = normalize((1-wA) * q_hex + wA * q_ref)
+        # where q_ref is either canonical/base rotation or Jacobian-derived anchor rotation.
+        #
+        # s5.2: Scale fusion in log-space (multiplicative update)
+        #   log(s_new) = log(s) + (1-wA)*Δlog(s)_hex + wA*Δlog(s)_ref
+        #
+        # s5.3: Jacobian-based anchor SR from displacement field u(x):
+        #   F = I + ∂u/∂x, polar(F)=R*S, use R for rotation, log(singular_values(S)) for scale
+        # ====================================================================
+        self.s5_rot_nlerp = False
+        self.s5_scale_log_fusion = False
+        self.s5_jacobian_sr = False
+        self.s5_jacobian_k = 8
+        self.s5_eps = 1e-8
+        
+        # ====================================================================
         # M2: Bounded Learnable Perturbation (ICML formulation)
         # ====================================================================
         # Formula: Φ = Φ_L + ε * tanh(Φ_E)
@@ -918,20 +1059,20 @@ class ModelHiddenParams(ParamGroup):
         self.warmup_steps = 5000           # For warmup_cap: steps to warmup ε
         
         # ====================================================================
-        # M2.2: Residual Normalization Mode
+        # M2.1a/M2.2: Residual Normalization Mode
         # ====================================================================
         # Controls how Eulerian residual Δ is normalized before scaling by ε.
-        # This prevents magnitude leakage: ε_eff truly represents trust-region radius.
         #
         # residual_mode options:
-        #   "tanh"     - H(Δ) = tanh(Δ), bounds to [-1,1] (M2/M2.1 baseline)
+        #   "none"     - H(Δ) = Δ, NO normalization (M2.1a baseline, RECOMMENDED)
+        #   "tanh"     - H(Δ) = tanh(Δ), bounds to [-1,1] (DESTROYS magnitudes!)
         #   "rmsnorm"  - H(Δ) = Δ / rms(Δ), RMS normalization per point
         #   "unitnorm" - H(Δ) = Δ / ||Δ||, L2 unit normalization per point
         #
-        # "Residual normalization makes ε a true trust-region radius by
-        #  preventing magnitude leakage from the Eulerian stream."
+        # WARNING: "tanh" mode causes ~5dB regression by destroying displacement
+        # magnitudes. Use "none" for best results (original M2.1a formula).
         # ====================================================================
-        self.residual_mode = "tanh"  # ["tanh", "rmsnorm", "unitnorm"]
+        self.residual_mode = "none"  # ["none", "tanh", "rmsnorm", "unitnorm"]
         self.norm_eps = 1e-6         # Epsilon for numerical stability in norm
         
         # ====================================================================
@@ -986,6 +1127,104 @@ class ModelHiddenParams(ParamGroup):
         # Eulerian uncertainty head configuration
         self.eulerian_uncertainty_hidden_dim = 32  # Hidden dim for s_E prediction MLP
         self.eulerian_s_E_init = 0.0  # Initial value for log-variance output (s_E=0 → σ²=1)
+        
+        # ====================================================================
+        # M5: Phase-Aware Trust-Region ε(t) (Time-Conditioned Epsilon)
+        # ====================================================================
+        # "Phase-aware trust-region allocates a bounded residual budget across
+        #  respiratory phases, preserving Lagrangian dominance while enabling
+        #  demand-driven corrections."
+        #
+        # Core innovation: Upgrade ε from scalar to time-conditioned ε(t):
+        #   ε(t) = ε_max * sigmoid(g(t))
+        #
+        # where g(t) is a low-capacity function that outputs a scalar.
+        # This allows different breathing phases to have different residual budgets:
+        #   - End-inspiration/expiration (stationary) may need less correction
+        #   - Mid-cycle (high velocity) may need more Eulerian contribution
+        #
+        # Two implementations for ablation:
+        #   per_frame: g_k is a learnable vector [T], one scalar per discrete phase
+        #   tiny_mlp:  g(t) is a small MLP with Fourier time encoding
+        #
+        # Inherits M2.1a freeze logic: freeze g parameters for first freeze_steps
+        # ====================================================================
+        self.phase_eps_enable = False      # Master switch for M5
+        self.phase_eps_mode = "per_frame"  # ["per_frame", "tiny_mlp"]
+        self.phase_eps_num_frames = 10     # Number of discrete phases (per_frame mode)
+        self.phase_eps_mlp_hidden = 32     # Hidden dim for tiny_mlp
+        self.phase_eps_mlp_layers = 2      # Number of layers for tiny_mlp
+        self.phase_eps_init_eps = None     # Initial ε value (None = use eps_init from M2)
+        self.phase_eps_eps_max = None      # Max ε (None = use eps_max from M2)
+        
+        # M5 Temporal Smoothness Prior:
+        #   L_smooth = mean_k (ε_{k+1} - ε_k)^2
+        # Prevents per-frame overfitting and encourages smooth ε(t) curves
+        self.phase_eps_smooth_lambda = 1e-4  # Weight for L_smooth (start small)
+        
+        # ====================================================================
+        # M6: High-Pass Structural Decomposition of Eulerian Residual
+        # ====================================================================
+        # "Unlike penalty-based regularization, we enforce a structural frequency
+        #  split of the Eulerian residual in the forward pass, allocating a bounded
+        #  correction budget to the high-frequency component to prevent shortcut
+        #  learning."
+        #
+        # Core formula:
+        #   r(x,t) = Φ_E(x,t) - Φ_L(x,t)      # Eulerian residual
+        #   r_low = LP(r)                       # Low-frequency via neighbor average
+        #   r_high = r - r_low                  # High-frequency residual
+        #   Φ = Φ_L + ε_high * r_high + ε_low * r_low
+        #
+        # Key insight: Hard structure constraint > soft penalty (M3/M4 failed)
+        # ====================================================================
+        self.hpass_enable = False              # Master switch for M6
+        self.hpass_lp_mode = "knn_cached"      # ["graph", "knn_cached"]
+        self.hpass_k = 8                       # Number of neighbors for LP
+        
+        # ε_high: High-frequency budget (main learnable parameter)
+        self.hpass_eps_high_max = None         # None = use eps_max from M2
+        self.hpass_eps_high_init = None        # None = use eps_init from M2
+        
+        # ε_low: Low-frequency budget (constrained)
+        self.hpass_eps_low_mode = "zero"       # ["zero", "tied", "bounded_small"]
+        self.hpass_eps_low_max = 0.005         # Only for bounded_small mode (<<eps_high_max)
+        self.hpass_eps_low_init = 0.001        # Only for bounded_small mode
+        
+        # Schedule: inherits M2.1a freeze logic
+        # Uses existing schedule_mode and freeze_steps from M2.1
+        
+        # ====================================================================
+        # M8: Transport-Correction Decomposition (Predictor-Corrector)
+        # ====================================================================
+        # "Instead of parallel blending Φ = α·Φ_L + (1-α)·Φ_E, we decompose
+        #  into serial predictor-corrector: Lagrangian transport followed by
+        #  Eulerian closure in the comoving frame."
+        #
+        # Core formula (Operator Splitting / ALE style):
+        #   1. Predictor (Lagrangian transport):  x' = x + Φ_L(x,t)
+        #   2. Corrector (Eulerian at x'):        Δ = Φ_E(x',t)
+        #   3. Update (budgeted residual):        x(t) = x' + ε·Δ
+        #
+        # Key insight: Residual evaluated in comoving frame (at x') naturally
+        # cannot learn large-scale transport already captured by Φ_L.
+        #
+        # Ablations:
+        #   - comoving=True (M8) vs comoving=False (parallel baseline)
+        #   - fixed ε vs learnable β(x,t) with budget constraint
+        # ====================================================================
+        self.transport_correct_enable = False      # Master switch for M8
+        self.transport_correct_eps = 0.01          # Fixed ε for residual (matches V5 finding)
+        
+        # Comoving frame ablation
+        self.transport_correct_comoving = False    # False=query at x (original), True=query at x' (comoving)
+        
+        # Learnable β(x,t) with budget constraint
+        self.transport_correct_learnable_beta = False  # Learn spatially-varying β
+        self.transport_correct_beta_max = 0.03         # Max β value (budget)
+        self.transport_correct_beta_init = 0.01        # Initial β
+        self.transport_correct_beta_budget = 0.01      # Budget constraint: E[β] ≤ budget
+        self.transport_correct_lambda_budget = 0.1     # Weight for budget penalty loss
         
         super().__init__(parser, "ModelHiddenParams")
 

@@ -1,7 +1,909 @@
 # PhysX-Gaussian 修改日志
+<!-- markdownlint-disable MD012 MD024 MD031 MD032 MD040 -->
 
-**生成时间**: 2025-12-04 18:50 (更新)  
-**基于提交**: PhysX-Boosted V9 + Robustness Testing
+**生成时间**: 2025-12-16 17:44 (更新)  
+**基于提交**: PhysX-Boosted s0/s1/s2/s3 实现
+
+---
+
+## [2025-12-16] s0系列: M1.2 Gate Function Variants
+
+### 背景
+
+M1.2 使用 `γ = γ_max * tanh((τ - s_E) / λ)` 计算融合权重的小扰动。
+从实验日志观察到：**tanh 容易饱和**（大量时间 γ ≈ γ_max），削弱了"根据不确定性自适应调节"的意义。
+
+s0 系列探索更优的 gate 函数设计：
+
+### s0.1a: Sigmoid Gate (Positive Only)
+
+**公式**:
+
+```text
+γ = γ_max * sigmoid((τ - s_E) / λ)
+```
+
+**特点**: γ ∈ (0, γ_max)，无负权，过渡更平滑
+
+**训练命令**:
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode uncertainty_gated --gamma_max 0.005 \
+  --gate_tau 0.0 --gate_lambda 1.0 \
+  --s0_gate_type sigmoid \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s0_1a_sigmoid_$(date +%Y%m%d_%H%M%S) \
+  > log/s0_1a_sigmoid_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### s0.1b: Sigmoid Bipolar Gate
+
+**公式**:
+
+```text
+γ = γ_max * (2 * sigmoid((τ - s_E) / λ) - 1)
+```
+
+**特点**: γ ∈ (-γ_max, γ_max)，比 tanh 更"软"，不易极端饱和
+
+**训练命令**:
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode uncertainty_gated --gamma_max 0.005 \
+  --gate_tau 0.0 --gate_lambda 1.0 \
+  --s0_gate_type sigmoid_bipolar \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s0_1b_sigmoid_bipolar_$(date +%Y%m%d_%H%M%S) \
+  > log/s0_1b_sigmoid_bipolar_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### s0.2: Normalized s_E with EMA
+
+**公式**:
+
+```text
+ŝ_E = (s_E - μ) / (σ + ε)   # μ, σ 用 EMA 统计
+γ = γ_max * tanh((τ - ŝ_E) / λ)
+```
+
+**特点**: s_E 标准化后，τ 更稳定，减少跨 run 漂移
+
+**训练命令**:
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode uncertainty_gated --gamma_max 0.005 \
+  --gate_tau 0.0 --gate_lambda 1.0 \
+  --s0_normalize_se \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s0_2_normalize_se_$(date +%Y%m%d_%H%M%S) \
+  > log/s0_2_normalize_se_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### s0.3: Residual Mode (Base + Residual)
+
+**公式**:
+
+```text
+β = β_min + (β_max - β_min) * sigmoid((τ - s_E) / λ)
+Φ = Φ_L + β · Φ_E   # Anchor 为 base，HexPlane 为 residual
+```
+
+**特点**: 更清晰的"物理骨架 + 欧拉残差"结构
+
+**训练命令**:
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode uncertainty_gated \
+  --gate_tau 0.0 --gate_lambda 1.0 \
+  --s0_residual_mode \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s0_3_residual_mode_$(date +%Y%m%d_%H%M%S) \
+  > log/s0_3_residual_mode_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### s0 Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--s0_gate_type` | `tanh` | Gate function: `tanh`, `sigmoid`, `sigmoid_bipolar` |
+| `--s0_normalize_se` | False | s0.2: Normalize s_E with EMA statistics |
+| `--s0_se_ema_decay` | 0.99 | s0.2: EMA decay rate for mean/std |
+| `--s0_residual_mode` | False | s0.3: Use Φ = Φ_L + β·Φ_E formulation |
+| `--s0_beta_min` | 0.005 | s0.3: Minimum residual weight |
+| `--s0_beta_max` | 0.015 | s0.3: Maximum residual weight |
+
+---
+
+## [2025-12-16] s3系列: Release Scale/Rotation from (1-α)
+
+### 背景
+
+V5 baseline 中 scale 和 rotation 都乘以 (1-α) ≈ 0.01，相当于"压制"了 HexPlane 对 scale/rotation 的贡献：
+
+```text
+dx = (1-α)*dx_hex + α*dx_anchor
+ds = (1-α)*ds_hex   # ≈ 0.01 * ds_hex
+dr = (1-α)*dr_hex   # ≈ 0.01 * dr_hex
+```
+
+s3 系列"放开"这个约束，让 HexPlane 的 scale/rotation 保持原始强度。
+
+### s3.1: Release Scale
+
+**公式**:
+
+```text
+dx = (1-α)*dx_hex + α*dx_anchor
+ds = ds_hex   # ← RELEASED (full HexPlane scale)
+dr = (1-α)*dr_hex
+```
+
+**训练命令**:
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s3_1_release_scale_$(date +%Y%m%d_%H%M%S) \
+  > log/s3_1_release_scale_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### s3.2: Release Rotation
+
+**公式**:
+
+```text
+dx = (1-α)*dx_hex + α*dx_anchor
+ds = (1-α)*ds_hex
+dr = dr_hex   # ← RELEASED (full HexPlane rotation)
+```
+
+**训练命令**:
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_rotation \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s3_2_release_rotation_$(date +%Y%m%d_%H%M%S) \
+  > log/s3_2_release_rotation_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### s3.3: Release Scale + Rotation
+
+**公式**:
+
+```text
+dx = (1-α)*dx_hex + α*dx_anchor
+ds = ds_hex   # ← RELEASED
+dr = dr_hex   # ← RELEASED
+```
+
+**训练命令**:
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale --s3_release_rotation \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s3_3_release_scale_rotation_$(date +%Y%m%d_%H%M%S) \
+  > log/s3_3_release_scale_rotation_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### s3.4: Release Scale + Zero Rotation
+
+**公式**:
+
+```text
+dx = (1-α)*dx_hex + α*dx_anchor  (α=0.99)
+ds = ds_hex   # ← RELEASED (full HexPlane scale)
+dr = 0        # ← ZEROED (HexPlane rotation completely disabled)
+```
+
+**动机**: s3.1 (release_scale) 效果最好，s3.2 (release_rotation) 效果最差。
+s3.4 进一步测试：完全禁用 HexPlane rotation 会不会更好？
+
+**训练命令**:
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale --s3_zero_rotation \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s3_4_zero_rotation_$(date +%Y%m%d_%H%M%S) \
+  > log/s3_4_zero_rotation_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### s3.5: s3.4 with α=0.95
+
+**公式**:
+
+```text
+dx = (1-α)*dx_hex + α*dx_anchor  (α=0.95, 更多 HexPlane 位移权重)
+ds = ds_hex
+dr = 0
+```
+
+**训练命令**:
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.95 --balance_lr 0 \
+  --s3_release_scale --s3_zero_rotation \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s3_5_alpha095_$(date +%Y%m%d_%H%M%S) \
+  > log/s3_5_alpha095_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### s3.6: s3.4 with α=0.90
+
+**公式**:
+
+```text
+dx = (1-α)*dx_hex + α*dx_anchor  (α=0.90, 10% HexPlane + 90% Anchor)
+ds = ds_hex
+dr = 0
+```
+
+**训练命令**:
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.90 --balance_lr 0 \
+  --s3_release_scale --s3_zero_rotation \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s3_6_alpha090_$(date +%Y%m%d_%H%M%S) \
+  > log/s3_6_alpha090_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### s3 Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--s3_release_scale` | False | ds = ds_hex (not multiplied by 1-α) |
+| `--s3_release_rotation` | False | dr = dr_hex (not multiplied by 1-α) |
+| `--s3_zero_rotation` | False | dr = 0 (completely disable HexPlane rotation) |
+
+---
+
+## [2025-12-16] s2系列: Anchor Fusion for Scale/Rotation
+
+### 背景
+
+V5 baseline 的融合公式只对位移 dx 应用了 anchor 融合：
+
+```text
+dx = (1-α)*dx_hex + α*dx_anchor
+ds = (1-α)*ds_hex
+dr = (1-α)*dr_hex
+```
+
+s2 系列尝试将 anchor 融合扩展到 scale 和 rotation，验证是否能进一步提升性能。
+
+### s2.1: Anchor Fusion to Scale
+
+**公式**:
+
+```text
+dx = (1-α)*dx_hex + α*dx_anchor
+ds = (1-α)*ds_hex + α*dx_anchor   # ← NEW
+dr = (1-α)*dr_hex
+```
+
+**训练命令**:
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s2_anchor_to_scale \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s2_1_anchor_to_scale_$(date +%Y%m%d_%H%M%S) \
+  > log/s2_1_anchor_to_scale_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### s2.2: Anchor Fusion to Rotation
+
+**公式**:
+
+```text
+dx = (1-α)*dx_hex + α*dx_anchor
+ds = (1-α)*ds_hex
+dr = (1-α)*dr_hex + α*dx_anchor_4d   # ← NEW (padded to 4D)
+```
+
+**训练命令**:
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s2_anchor_to_rotation \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s2_2_anchor_to_rotation_$(date +%Y%m%d_%H%M%S) \
+  > log/s2_2_anchor_to_rotation_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### s2.3: Anchor Fusion to Scale + Rotation
+
+**公式**:
+
+```text
+dx = (1-α)*dx_hex + α*dx_anchor
+ds = (1-α)*ds_hex + α*dx_anchor   # ← NEW
+dr = (1-α)*dr_hex + α*dx_anchor_4d   # ← NEW (padded to 4D)
+```
+
+**Bug Fix (2025-12-16 04:45)**:
+
+- `dr_hex` 是四元数 `[N, 4]`，`dx_anchor` 是 `[N, 3]`
+- 修复：`dx_anchor_4d = cat([dx_anchor, zeros], dim=1)` 补零到 4D
+
+**训练命令**:
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s2_anchor_to_scale --s2_anchor_to_rotation \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s2_3_anchor_to_scale_rotation_$(date +%Y%m%d_%H%M%S) \
+  > log/s2_3_anchor_to_scale_rotation_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+---
+
+## [2025-12-16] s1系列: Per-Anchor Small-Perturbation
+
+### s1: Per-Anchor γᵢ (无额外正则)
+
+**目标**: 验证"把全局γ变成 per-anchor γᵢ"本身是否带来稳定增益。
+
+**核心改动**:
+
+- 每个锚点 i 有独立的 bounded perturbation: γᵢ(t) ∈ [-γ_max, γ_max]
+- 通过 KNN 权重传播到高斯点: γ(x,t) = Σ wᵢ(x)·γᵢ(t)
+- Fusion 严格保持系数和: Φ = (0.99-γ(x,t))·Φ_L + (0.01+γ(x,t))·Φ_E
+- s_E(i,t) 通过从点到锚点的聚合得到（不新增网络）
+
+**公式**:
+
+```text
+s_E(i,t) = Σ_x wᵢ(x)·s_E(x,t) / (Σ_x wᵢ(x) + ε)  # 聚合到锚点
+γᵢ = γ_max * tanh((τ - s_E(i,t)) / λ)             # 每锚点 γ
+γ(x,t) = Σ wᵢ(x)·γᵢ                               # 插值到高斯
+```
+
+**训练命令**:
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode uncertainty_gated --gamma_max 0.005 \
+  --gate_tau 0.0 --gate_lambda 1.0 \
+  --per_anchor_gamma \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s1_per_anchor_gamma_$(date +%Y%m%d_%H%M%S) \
+  > log/s1_per_anchor_gamma_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### s1.1: s1 + Anchor Graph 空间平滑
+
+**目标**: 防止相邻锚点 γᵢ 巨不一致（棋盘格 gate）。
+
+**公式**: L_graph = λ · Σ_{(i,j)∈E} (γᵢ - γⱼ)²
+
+**训练命令**:
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode uncertainty_gated --gamma_max 0.005 \
+  --gate_tau 0.0 --gate_lambda 1.0 \
+  --per_anchor_gamma --lambda_gamma_graph 0.01 \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s1_1_graph_smooth_$(date +%Y%m%d_%H%M%S) \
+  > log/s1_1_graph_smooth_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### s1.2: s1 + 时间平滑
+
+**目标**: 直接压 flicker，防止 γᵢ(t) 时间抖动。
+
+**公式**: L_temp = λ · Σᵢ |γᵢ(t) - γᵢ(t-Δt)|²
+
+**训练命令**:
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode uncertainty_gated --gamma_max 0.005 \
+  --gate_tau 0.0 --gate_lambda 1.0 \
+  --per_anchor_gamma --lambda_gamma_temp 0.01 \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s1_2_temp_smooth_$(date +%Y%m%d_%H%M%S) \
+  > log/s1_2_temp_smooth_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+**备注**:
+
+- README 与本日志中的 s1/s1.1/s1.2/s1.3 训练命令已统一显式加入 `--gate_tau 0.0 --gate_lambda 1.0`，避免默认值漂移导致实验不可比。
+
+### s1.4: s0.1b + s1.1（sigmoid_bipolar gate + Anchor Graph 空间平滑）
+
+**目标**: 将 s0.1b 的更平滑双极性 gate 与 s1.1 的空间平滑正则组合，抑制棋盘格 gate，同时允许 γ 取负值（减弱残差）。
+
+**配置**:
+
+- `s0.1b`: `--s0_gate_type sigmoid_bipolar`
+- `s1.1`: `--per_anchor_gamma --lambda_gamma_graph 0.01`
+
+其中 `--lambda_gamma_graph 0.01` 与 s1.1 的默认实验一致。
+
+**训练命令**:
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --per_anchor_gamma --s0_gate_type sigmoid_bipolar --lambda_gamma_graph 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s1_4_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s1_4_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+**通过标准**:
+
+- flicker 指标明显下降
+- PSNR/LPIPS 不降（最好略升）
+- γᵢ 的空间分布更连贯、时间曲线更平滑
+
+---
+
+## [2025-12-15] M7/M8: 结构性融合改进
+
+### M7: High-Pass Structural Decomposition on M1.2
+
+**核心思想**: 将 M6 的高通频率分解应用到 M1.2 (uncertainty_gated) 融合模式上。
+
+**公式**:
+
+```text
+r = Φ_E - Φ_L                    # Eulerian residual
+r_low = LP(r), r_high = r - r_low  # 频率分解
+Φ = Φ_L + hex_weight · (r_high + tied_factor · r_low)
+```
+
+**tied 模式**: `tied_factor = 1.0` 时，数学上退化回原始 M1.2。
+
+**训练命令**:
+
+```bash
+# M7-tied (基于 M1.2 g005 + hpass tied)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode uncertainty_gated --gamma_max 0.005 --gate_tau 0.0 --gate_lambda 1.0 \
+  --hpass_enable --hpass_eps_low_mode tied \
+  --mask_ratio 0.0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 10000 30000 50000 --save_checkpoint \
+  --dirname m7_tied_$(date +%Y%m%d_%H%M%S) \
+  > log/m7_tied_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### M8: Transport-Correction Decomposition (Predictor-Corrector)
+
+**核心创新**: 将并行融合 `Φ = α·Φ_L + (1-α)·Φ_E` 升级为串行 Predictor-Corrector 分解。
+
+**论文叙事**: *"Instead of parallel blending, we decompose into serial predictor-corrector: Lagrangian transport followed by Eulerian closure in the comoving frame."*
+
+**公式 (Operator Splitting / ALE style)**:
+
+```text
+1. Predictor (Lagrangian transport):  x' = x + Φ_L(x,t)
+2. Corrector (Eulerian at x'):        Δ = Φ_E(x',t)  [comoving frame]
+3. Update (budgeted residual):        x(t) = x' + ε·Δ
+```
+
+**关键洞察**: 残差在 comoving frame (x') 上评估，天然无法学习 Φ_L 已捕获的大尺度运输。
+
+**消融实验设计**:
+
+1. **comoving=True** (M8 主实验): Eulerian 在 x' 上查询
+2. **comoving=False** (消融): Eulerian 在 x 上查询 (应该更差)
+3. **learnable_beta**: 学习空间变化的 β(x',t) + budget 约束
+
+**训练命令**:
+
+```bash
+# M8 comoving (主实验 - Eulerian 在 transported position 查询)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --transport_correct_enable --transport_correct_comoving \
+  --transport_correct_eps 0.01 \
+  --mask_ratio 0.0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 10000 30000 50000 --save_checkpoint \
+  --dirname m8_comoving_$(date +%Y%m%d_%H%M%S) \
+  > log/m8_comoving_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# M8 learnable beta (学习 β(x',t) + budget 约束)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --transport_correct_enable --transport_correct_comoving \
+  --transport_correct_learnable_beta \
+  --transport_correct_beta_max 0.03 --transport_correct_beta_init 0.01 \
+  --transport_correct_beta_budget 0.01 --transport_correct_lambda_budget 0.1 \
+  --mask_ratio 0.0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 10000 30000 50000 --save_checkpoint \
+  --dirname m8_learnable_beta_$(date +%Y%m%d_%H%M%S) \
+  > log/m8_learnable_beta_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### 修改文件
+
+| 文件 | 修改 |
+|------|------|
+| `x2_gaussian/arguments/__init__.py` | 添加 M8 参数: `transport_correct_*` |
+| `x2_gaussian/gaussian/anchor_module.py` | 实现 M7/M8 融合逻辑, 添加 `get_m8_statistics()` |
+| `train.py` | 添加 M8 日志记录 |
+
+---
+
+## [2025-12-15] M5/M6 Baseline 修复
+
+### 问题描述
+
+M5/M6 实验的 baseline 结果（psnr3d ~39）远低于历史最佳（psnr3d ~45）。
+
+### 根本原因
+
+1. **缺失 V5 LEARNABLE BALANCE**: 历史最佳配置使用了 `--use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0`
+2. **residual_mode 默认值错误**: 原默认值 `tanh` 会破坏位移幅度，改为 `none`
+3. **mask_ratio 默认值错误**: 需要显式设置 `--mask_ratio 0.0`
+
+### 修复内容
+
+| 文件 | 修改 |
+|------|------|
+| `x2_gaussian/gaussian/anchor_module.py` | `residual_mode` 默认值改为 `none` |
+| `x2_gaussian/arguments/__init__.py` | 更新 `residual_mode` 文档和默认值 |
+| `README.md` | 更新 M5/M6 训练命令，添加完整参数 |
+| `CHANGELOG_physx_gaussian.md` | 更新训练命令文档 |
+
+### 正确的 baseline 参数
+
+```bash
+--use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0
+--mask_ratio 0.0
+--lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0
+--eps_max 0.03 --eps_init 0.015
+--schedule_mode freeze_rho --freeze_steps 2000
+```
+
+### sparse50 数据集复现实验（dir_4d_case1_sparse50.pickle）
+
+```bash
+# M1.2 g005 (对应 train_physx_boosted_m1_2_g005_case1_... 配置迁移到 sparse50)
+nohup python train.py -s data/dir_4d_case1_sparse50.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --fusion_mode uncertainty_gated \
+  --gate_tau 0.0 --gate_lambda 1.0 \
+  --gamma_max 0.005 \
+  --m1_lambda_gate 0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname m1_2_g005_sparse50_$(date +%Y%m%d_%H%M%S) \
+  > log/m1_2_g005_sparse50_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# M2.1a freeze_rho (对应 train_physx_boosted_m2_1a_freeze_case1_... 配置迁移到 sparse50)
+nohup python train.py -s data/dir_4d_case1_sparse50.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode bounded_perturb \
+  --schedule_mode freeze_rho --freeze_steps 2000 \
+  --eps_max 0.03 --eps_init 0.015 \
+  --mask_ratio 0.0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname m2_1a_sparse50_$(date +%Y%m%d_%H%M%S) \
+  > log/m2_1a_sparse50_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+---
+
+## [2025-12-14] M6: High-Pass Structural Decomposition
+
+### 核心创新（M6）
+
+**论文叙事**: *"Unlike penalty-based regularization, we enforce a structural frequency split of the Eulerian residual in the forward pass, allocating a bounded correction budget to the high-frequency component to prevent shortcut learning."*
+
+关键洞察：M3/M4 的惩罚式正则无法提升（多半压掉必要的中频修正），M6 在 forward 中强制分解残差：
+
+```text
+r(x,t) = Φ_E(x,t) - Φ_L(x,t)    # Eulerian residual
+r_low = LP(r)                    # 低频（邻域平均）
+r_high = r - r_low               # 高频
+Φ = Φ_L + ε_high·r_high + ε_low·r_low
+```
+
+### 三种 eps_low 模式
+
+| 模式 | 描述 | 用途 |
+|------|------|------|
+| `zero` | ε_low = 0（硬高通） | 主实验，结构创新 |
+| `tied` | ε_low = ε_high | Sanity check（应等于 baseline） |
+| `bounded_small` | ε_low 可学习但 max << ε_high | 消融实验 |
+
+### 新增配置参数
+
+| 参数 | 默认值 | 描述 |
+|------|--------|------|
+| `--hpass_enable` | False | M6 主开关 |
+| `--hpass_lp_mode` | knn_cached | LP 模式: graph / knn_cached |
+| `--hpass_k` | 8 | 邻域大小 |
+| `--hpass_eps_low_mode` | zero | 低频预算模式 |
+| `--hpass_eps_low_max` | 0.005 | bounded_small 模式的 eps_low 上限 |
+
+### 关键特性
+
+1. **继承 M2.1a freeze 策略**: 前 `freeze_steps` 步冻结 ρ_high/ρ_low
+2. **诊断日志**: E_low、E_high、ratio = E_low/(E_high+1e-8)
+3. **无新 loss**: 纯 forward 结构改动，避免 confound
+
+### [2025-12-14] M6 v2 修复（实现细节）
+
+为满足“forward 内 LP 必须高效 + tied 必须严格退化回 baseline”的要求，做了两处关键修复：
+
+1. **LP 复杂度修复**: `knn_cached` 不再对 5w Gaussians 做 `torch.cdist` (O(N^2))。
+   - 复用项目已有的 **Gaussian→Anchor KNN binding**（`knn_indices/knn_weights`），
+   - 通过 `scatter -> (anchor-space smooth) -> gather` 实现 LP，复杂度 **O(N·K + M·k)**。
+
+2. **Sanity 严格退化修复**: residual 定义改为 `r = Φ_E - Φ_L`（位移上 `r = dx_H - dx_anchor`）。
+   - 当 `eps_low_mode="tied"` 时，公式严格退化为 M2.1a：`Φ = Φ_L + ε_eff*(Φ_E - Φ_L)`。
+
+### 修改文件
+
+| 文件 | 修改内容 |
+|------|----------|
+| `x2_gaussian/arguments/__init__.py` | +30 行 M6 hpass 配置 |
+| `x2_gaussian/gaussian/anchor_module.py` | +200 行 LowPassOperator + 双预算融合 |
+| `train.py` | +40 行 M6 日志 + freeze 逻辑 |
+
+### 训练命令
+
+**重要**: 必须包含 `--use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0` 以匹配历史最佳 baseline (psnr3d ~45)。
+
+```bash
+# Baseline (M2.1a + V5 balance) - 标准 baseline
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode bounded_perturb \
+  --schedule_mode freeze_rho --freeze_steps 2000 \
+  --eps_max 0.03 --eps_init 0.015 \
+  --mask_ratio 0.0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname m5_baseline_$(date +%Y%m%d_%H%M%S) \
+  > log/m5_baseline_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# M6-tied (sanity check - 应与 baseline 结果一致)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode bounded_perturb \
+  --schedule_mode freeze_rho --freeze_steps 2000 \
+  --mask_ratio 0.0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --hpass_enable --hpass_eps_low_mode tied \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname m6_tied_$(date +%Y%m%d_%H%M%S) \
+  > log/m6_tied_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# M6-hard (主实验 - 硬高通，ε_low=0)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode bounded_perturb \
+  --schedule_mode freeze_rho --freeze_steps 2000 \
+  --mask_ratio 0.0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --hpass_enable --hpass_eps_low_mode zero \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname m6_hard_$(date +%Y%m%d_%H%M%S) \
+  > log/m6_hard_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+---
+
+## [2025-12-13] M5: Phase-Aware Trust-Region ε(t)
+
+### 核心创新（M5）
+
+**论文叙事**: *"Phase-aware trust-region allocates a bounded residual budget across respiratory phases, preserving Lagrangian dominance while enabling demand-driven corrections."*
+
+将 M2.1a 的全局标量 ε 升级为时间相位条件化的 ε(t)：
+
+```text
+ε(t) = ε_max * sigmoid(g(t))
+```
+
+其中 g(t) 是低容量函数，允许不同呼吸相位有不同的残差预算。
+
+### 两种模式
+
+| 模式 | 描述 | 适用场景 |
+|------|------|----------|
+| `per_frame` | g_k 为可学习向量 [T]，每帧一个标量 | 最稳定，离散相位 |
+| `tiny_mlp` | g(t) 是小型 MLP + Fourier 编码 | 连续时间，论文味 |
+
+### 新增配置参数
+
+| 参数 | 默认值 | 描述 |
+|------|--------|------|
+| `--phase_eps_enable` | False | M5 主开关 |
+| `--phase_eps_mode` | per_frame | 模式: per_frame / tiny_mlp |
+| `--phase_eps_num_frames` | 10 | 离散相位数 (per_frame) |
+| `--phase_eps_mlp_hidden` | 32 | MLP 隐藏层维度 (tiny_mlp) |
+| `--phase_eps_mlp_layers` | 2 | MLP 层数 (tiny_mlp) |
+| `--phase_eps_smooth_lambda` | 1e-4 | L_smooth 平滑先验权重 |
+
+### 关键特性
+
+1. **继承 M2.1a freeze 策略**: 前 `freeze_steps` 步冻结 g 参数，ε(t) 固定为 init_eps
+2. **时间平滑先验**: L_smooth = mean_k (ε_{k+1} - ε_k)² 防止过拟合
+3. **日志/可视化**: 每 1000 步输出 ε(t) 统计，支持曲线可视化
+
+### 修改文件
+
+| 文件 | 修改内容 |
+|------|----------|
+| `x2_gaussian/arguments/__init__.py` | +33 行 M5 配置参数 |
+| `x2_gaussian/gaussian/anchor_module.py` | +220 行 PhaseEpsilon 模块 |
+| `train.py` | +50 行 L_smooth 损失 + freeze 逻辑 |
+| `scripts/visualize_phase_eps.py` | 新建，ε(t) 曲线可视化 |
+
+### 训练命令
+
+**重要**: 必须包含 `--use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0` 以匹配历史最佳 baseline。
+
+```bash
+# M5-per_frame (离散相位)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode bounded_perturb \
+  --schedule_mode freeze_rho --freeze_steps 2000 \
+  --mask_ratio 0.0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --phase_eps_enable --phase_eps_mode per_frame \
+  --phase_eps_num_frames 10 --phase_eps_smooth_lambda 1e-4 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname m5_perframe_$(date +%Y%m%d_%H%M%S) \
+  > log/m5_perframe_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# M5-tiny_mlp (连续时间 MLP)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode bounded_perturb \
+  --schedule_mode freeze_rho --freeze_steps 2000 \
+  --mask_ratio 0.0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --phase_eps_enable --phase_eps_mode tiny_mlp \
+  --phase_eps_mlp_hidden 32 --phase_eps_mlp_layers 2 \
+  --phase_eps_smooth_lambda 1e-4 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname m5_tinymlp_$(date +%Y%m%d_%H%M%S) \
+  > log/m5_tinymlp_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### 可视化命令
+
+```bash
+python scripts/visualize_phase_eps.py --model_path output/xxx/ --output_dir plots/
+```
 
 ---
 
@@ -13,7 +915,7 @@
 2. **PhysX-Boosted**: HexPlane + Anchor 双分支融合（站在巨人肩膀上）
 3. **PhysX-Boosted V5-V9**: 多种融合策略的消融实验版本
 
-### 核心创新
+### 核心创新（总览）
 
 - **原始 X²-Gaussian**: 依赖隐式周期拟合，对不规则呼吸泛化能力差
 - **PhysX-Gaussian**: 使用物理锚点 + 注意力机制，即使呼吸不规则也能推断形变
@@ -2440,3 +3342,1351 @@ decouple_num_dirs = 1             # Number of random directions
 - M3 LP knn → 重新运行  
 - M4 velocity_corr v2 → 新增
 - M4 jacobian_corr v2 → 新增
+
+---
+
+## M 系列实验完整结果汇总 (2025-12-13)
+
+### M1.x 系列 - α Balance 优化
+
+| 版本 | 核心公式 | 关键参数 | psnr3d | ssim3d |
+|------|----------|----------|--------|--------|
+| M1 bayes (早期) | Δx = (1-α)·Δx_hex + α·Δx_anchor | α=0.99 可学习, balance_lr=0.001 | 40.51 | 0.967 |
+| M1 sigmoid (早期) | 同上 | α=0.99 可学习 | 44.73 | 0.977 |
+| M1.1 bayes | 同上 | 改进初始化 | 44.27 | 0.975 |
+| M1.1 sigmoid | 同上 | 改进初始化 | 44.32 | 0.976 |
+| **M1.2 g=0.05** | Φ = (0.99-γ)·Φ_L + (0.01+γ)·Φ_E | γ=0.05, hex 权重 6% | **45.30** | **0.981** |
+| M1.2 g=0.1 | 同上 | γ=0.1, hex 权重 11% | 45.00 | 0.979 |
+| M1.3a α=0.985 | Δx = (1-α)·Δx_hex + α·Δx_anchor | α=0.985 固定, balance_lr=0 | 45.23 | 0.980 |
+| M1.3b α=0.985 lr | 同上 | α=0.985 可学习, balance_lr=0.0001 | 45.11 | 0.980 |
+
+**M1 结论**: M1.2 g=0.05 最优，HexPlane 权重 ~6% 是最佳平衡点
+
+### M2.x 系列 - Trust-Region + Residual Normalization
+
+| 版本 | 核心公式 | 关键参数 | psnr3d | ssim3d |
+|------|----------|----------|--------|--------|
+| M2 (早期) | dx = dx_anchor + ε·tanh(dx_hex) | eps=0.01 恒定 | 39.49 | 0.953 |
+| M2.05 | Φ = (1-ε)·Φ_L + ε·Φ_E | eps_max=0.03, eps_init=0.015 | 45.13 | 0.980 |
+| **M2.1a freeze_rho** | Φ = (1-ε_eff)·Φ_L + ε_eff·Φ_E | schedule=freeze_rho, freeze_steps=2000 | **45.33** | **0.980** |
+| M2.1b warmup | 同上 | schedule=warmup_cap, warmup_steps=5000 | 45.18 | 0.980 |
+| M2 none | 同上 | schedule=none | 45.30 | 0.980 |
+| M2.2 tanh | Φ = (1-ε_eff)·Φ_L + ε_eff·H(Φ_E) | H=tanh, bounded_perturb | 39.50 | 0.953 |
+| M2.2a rmsnorm | 同上 | H=rmsnorm | 37.69 | 0.919 |
+| M2.2b unitnorm | 同上 | H=unitnorm | 38.96 | 0.940 |
+
+**M2 结论**: M2.1a freeze_rho 最优。M2.2 残差归一化严重损害性能（-6~7 dB）
+
+### M3 系列 - Low-Frequency Leakage Penalty
+
+| 版本 | 核心公式 | 关键参数 | psnr3d | ssim3d |
+|------|----------|----------|--------|--------|
+| M3 LP knn (旧配置) | L_LP = λ·‖LP(Δ)‖² | bounded_perturb + lp_mode=knn_mean | 41.92 | 0.970 |
+| **M3 LP knn v2** | 同上 | 继承 M2.1 + lp_enable, λ=0.01 | **45.09** | 0.979 |
+
+**M3 结论**: 正确配置后 LP 正则化略微降低性能 (-0.24 dB vs M2.1 baseline)
+
+### M4 系列 - Subspace Decoupling Regularization
+
+| 版本 | 核心公式 | 关键参数 | psnr3d | ssim3d |
+|------|----------|----------|--------|--------|
+| M4 vel (旧配置) | L_dec = λ·\|cos(v_L, v_E)\| | bounded_perturb + velocity_corr | 41.77 | 0.970 |
+| M4 jac (旧配置) | L_dec = λ·\|cos(J_L·w, J_E·w)\| | bounded_perturb + jacobian_corr | 41.98 | 0.972 |
+| **M4 vel v2** | 同上 | 继承 M2.1 + velocity_corr, λ=0.01 | **45.07** | 0.979 |
+| **M4 jac v2** | 同上 | 继承 M2.1 + jacobian_corr, λ=0.01 | **45.09** | 0.980 |
+
+**M4 结论**: 正确配置后 decoupling 正则化无明显提升 (基本持平 M2.1 baseline)
+
+### 总排名 (psnr3d 降序)
+
+| 排名 | 实验 | psnr3d | ssim3d | Δ vs M2.1 |
+|------|------|--------|--------|-----------|
+| 1 | **M2.1a freeze_rho** | **45.33** | 0.980 | **基准** |
+| 2 | M2 none | 45.30 | 0.980 | -0.03 |
+| 3 | M1.2 g=0.05 | 45.30 | 0.981 | -0.03 |
+| 4 | M1.3a α=0.985 | 45.23 | 0.980 | -0.10 |
+| 5 | M2 best_baseline | 45.19 | 0.980 | -0.14 |
+| 6 | M2.1b warmup | 45.18 | 0.980 | -0.15 |
+| 7 | M2.05 | 45.13 | 0.980 | -0.20 |
+| 8 | M3 LP knn v2 | 45.09 | 0.979 | -0.24 |
+| 9 | M4 jac v2 | 45.09 | 0.980 | -0.24 |
+| 10 | M4 vel v2 | 45.07 | 0.979 | -0.26 |
+| ... | ... | ... | ... | ... |
+| 27 | M2.2a rmsnorm | 37.69 | 0.919 | **-7.64** |
+
+### 关键发现
+
+1. **最优配置**: M2.1a freeze_rho (无残差归一化，前 2000 步冻结 ε)
+2. **M3/M4 正则化无效**: 所有正则化尝试都没有超越简单的 M2.1 baseline
+3. **M2.2 残差归一化有害**: rmsnorm/unitnorm 导致 6-7 dB 严重下降
+4. **HexPlane 权重最优点**: ~1.5%-6% (对应 α=0.985~0.94)
+5. **旧配置 (bounded_perturb) 有缺陷**: 导致 ||Δ|| 爆炸，性能下降 3-4 dB
+
+---
+
+## [2025-12-19] 多数据集对比实验
+
+### 背景
+
+为验证 V5 nomask 和 s3.1 在不同数据集上的泛化能力，启动以下对比实验：
+
+### 实验设计
+
+对比三个版本：
+1. **x2-gaussian baseline**: 原始论文方法（无 anchor deformation）
+2. **V5 nomask**: PhysX-Boosted V5 配置（α=0.99, mask_ratio=0.0）
+3. **s3.1**: 在 V5 基础上 release scale（ds = ds_hex）
+
+### 启动的实验
+
+#### dir_4d_case2 数据集
+
+```bash
+# V5 nomask
+nohup python train.py -s data/dir_4d_case2.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --iterations 50000 --test_iterations 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname v5_nomask_case2_$(date +%Y%m%d_%H%M%S) \
+  > log/v5_nomask_case2_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### 4dlung_case4 数据集
+
+```bash
+# x2-gaussian baseline
+nohup python train.py -s data/4dlung_case4.pickle \
+  --save_iterations 30000 50000 --save_checkpoint \
+  --iterations 50000 --test_iterations 10000 20000 30000 40000 50000 \
+  --dirname baseline_4dlung_case4_$(date +%Y%m%d_%H%M%S) \
+  > log/baseline_4dlung_case4_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# V5 nomask
+nohup python train.py -s data/4dlung_case4.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --iterations 50000 --test_iterations 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname v5_nomask_4dlung_case4_$(date +%Y%m%d_%H%M%S) \
+  > log/v5_nomask_4dlung_case4_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# s3.1
+nohup python train.py -s data/4dlung_case4.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s3_1_4dlung_case4_$(date +%Y%m%d_%H%M%S) \
+  > log/s3_1_4dlung_case4_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### spare_mc_4d_case1 数据集
+
+```bash
+# x2-gaussian baseline
+nohup python train.py -s data/spare_mc_4d_case1.pickle \
+  --save_iterations 30000 50000 --save_checkpoint \
+  --iterations 50000 --test_iterations 10000 20000 30000 40000 50000 \
+  --dirname baseline_spare_mc_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/baseline_spare_mc_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# V5 nomask
+nohup python train.py -s data/spare_mc_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --iterations 50000 --test_iterations 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname v5_nomask_spare_mc_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/v5_nomask_spare_mc_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# s3.1
+nohup python train.py -s data/spare_mc_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s3_1_spare_mc_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s3_1_spare_mc_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### 实验日志
+
+| 数据集 | 版本 | Log 文件 |
+|--------|------|----------|
+| dir_4d_case2 | V5 nomask | `log/v5_nomask_case2_20251219_022341.log` |
+| 4dlung_case4 | baseline | `log/baseline_4dlung_case4_20251219_022341.log` |
+| 4dlung_case4 | V5 nomask | `log/v5_nomask_4dlung_case4_20251219_022341.log` |
+| 4dlung_case4 | s3.1 | `log/s3_1_4dlung_case4_20251219_022341.log` |
+| spare_mc_4d_case1 | baseline | `log/baseline_spare_mc_case1_20251219_022341.log` |
+| spare_mc_4d_case1 | V5 nomask | `log/v5_nomask_spare_mc_case1_20251219_022341.log` |
+| spare_mc_4d_case1 | s3.1 | `log/s3_1_spare_mc_case1_20251219_022341.log` |
+
+---
+
+## [2025-12-19] 鲁棒性数据集生成工具扩展
+
+### 概述
+
+扩展了数据集生成工具，支持更多真实 CT 采集挑战的模拟：
+
+1. **组合扰动** (phase_noise + sparse views)
+2. **投影测量噪声** (Poisson / Gaussian)
+3. **有限角度** (Limited-angle)
+4. **金属伪影/条纹** (Metal artifacts / Stripes)
+5. **运动模糊** (Motion blur)
+
+### 1. 组合扰动数据集 (`tools/create_robustness_datasets.py --combine`)
+
+现在支持在单个 pickle 中同时应用相位扰动和稀疏视角：
+
+```bash
+# 生成 phase_noise=0.5 + sparse=50% 组合数据集
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case1.pickle \
+  --phase_noise 0.5 \
+  --view_ratio 0.5 \
+  --combine
+
+# 输出: data/dir_4d_case1_noise0.5_sparse50.pickle
+```
+
+### 2. 投影测量噪声 (`tools/add_projection_noise.py`)
+
+模拟真实 CT 采集中的量子噪声和电子噪声：
+
+| 噪声类型 | 描述 | 关键参数 |
+|----------|------|----------|
+| `poisson` | 光子计数统计噪声 | `--photon_scale` (1e4=中等, 1e3=重度) |
+| `gaussian` | 电子/读出噪声 | `--gaussian_std` (0.05=中等) |
+| `mixed` | Poisson + Gaussian | 两者组合 |
+
+```bash
+# Poisson 噪声 (光子计数 1e4)
+python tools/add_projection_noise.py \
+  --input data/dir_4d_case1.pickle \
+  --noise_type poisson \
+  --photon_scale 1e4
+
+# Gaussian 噪声 (std=5%)
+python tools/add_projection_noise.py \
+  --input data/dir_4d_case1.pickle \
+  --noise_type gaussian \
+  --gaussian_std 0.05
+
+# 混合噪声
+python tools/add_projection_noise.py \
+  --input data/dir_4d_case1.pickle \
+  --noise_type mixed \
+  --photon_scale 1e4 \
+  --gaussian_std 0.02
+```
+
+### 3. 有限角度 CT (`tools/create_limited_angle.py`)
+
+模拟角度覆盖不完整的情况（比稀疏视角更难）：
+
+| 模式 | 描述 |
+|------|------|
+| `single` | 单一连续扇区 (如仅 0°-120°) |
+| `dual` | 两个对立扇区 (如 0°-90° 和 180°-270°) |
+
+```bash
+# 仅保留 120° 范围
+python tools/create_limited_angle.py \
+  --input data/dir_4d_case1.pickle \
+  --angle_range 120
+
+# 保留两个 90° 对立扇区
+python tools/create_limited_angle.py \
+  --input data/dir_4d_case1.pickle \
+  --angle_range 90 \
+  --mode dual
+```
+
+### 4. 金属伪影/条纹 (`tools/add_metal_artifacts.py`)
+
+模拟探测器故障和金属物体引起的伪影：
+
+| 伪影类型 | 描述 | 关键参数 |
+|----------|------|----------|
+| `stripe` | 条纹伪影（探测器行故障） | `--stripe_ratio`, `--stripe_intensity` |
+| `dead` | 坏死像素 | `--dead_ratio` |
+| `metal` | 金属高衰减 | `--metal_intensity`, `--metal_width` |
+| `ring` | 环形伪影 | `--ring_count`, `--ring_intensity` |
+
+```bash
+# 条纹伪影 (5% 探测器行受影响)
+python tools/add_metal_artifacts.py \
+  --input data/dir_4d_case1.pickle \
+  --artifact_type stripe \
+  --stripe_ratio 0.05
+
+# 金属伪影
+python tools/add_metal_artifacts.py \
+  --input data/dir_4d_case1.pickle \
+  --artifact_type metal \
+  --metal_intensity 2.0
+
+# 环形伪影
+python tools/add_metal_artifacts.py \
+  --input data/dir_4d_case1.pickle \
+  --artifact_type ring \
+  --ring_count 3
+```
+
+### 5. 运动模糊 (`tools/add_motion_blur.py`)
+
+模拟曝光时间跨越多个呼吸相位导致的模糊：
+
+| 模糊类型 | 描述 | 关键参数 |
+|----------|------|----------|
+| `phase_mix` | 相邻相位混合 | `--mix_ratio` (0-0.5) |
+| `temporal_avg` | 时间方向平均 | `--window_size` |
+| `exposure` | 长曝光模拟 | `--exposure_phases` |
+
+```bash
+# 相位混合模糊 (20% 混合)
+python tools/add_motion_blur.py \
+  --input data/dir_4d_case1.pickle \
+  --blur_type phase_mix \
+  --mix_ratio 0.2
+
+# 时间平均模糊
+python tools/add_motion_blur.py \
+  --input data/dir_4d_case1.pickle \
+  --blur_type temporal_avg \
+  --window_size 3
+
+# 长曝光模糊 (覆盖 30% 呼吸周期)
+python tools/add_motion_blur.py \
+  --input data/dir_4d_case1.pickle \
+  --blur_type exposure \
+  --exposure_phases 0.3
+```
+
+### 已生成的新数据集
+
+| 数据集 | 描述 | 训练视角 |
+|--------|------|----------|
+| `dir_4d_case1_noise0.7.pickle` | 70% 相位扰动 | 300 |
+| `dir_4d_case1_noise1.0.pickle` | 100% 相位扰动（极限） | 300 |
+| `dir_4d_case1_noise0.5_sparse50.pickle` | 50% 相位扰动 + 50% 稀疏 | 150 |
+
+### 难度等级参考
+
+| 难度 | 相位扰动 | 稀疏视角 | 投影噪声 | 有限角度 |
+|------|----------|----------|----------|----------|
+| 简单 | 0.15 | 80% | 1e5 | 300° |
+| 中等 | 0.3-0.5 | 50% | 1e4 | 180° |
+| 困难 | 0.7-1.0 | 25-33% | 1e3 | 120° |
+| 极限 | 1.0 + sparse | 20% | 5e2 | 90° |
+
+### 工具文件列表
+
+| 文件 | 功能 |
+|------|------|
+| `tools/create_robustness_datasets.py` | 相位扰动 + 稀疏视角 (支持 --combine) |
+| `tools/add_projection_noise.py` | Poisson/Gaussian 投影噪声 |
+| `tools/create_limited_angle.py` | 有限角度 CT |
+| `tools/add_metal_artifacts.py` | 金属伪影/条纹/环形伪影 |
+| `tools/add_motion_blur.py` | 运动模糊 |
+
+---
+
+## [2025-12-19] s4.1：Anchor-only 位置变化场（基于 s3.1）
+
+### 定义
+
+在 s3.1（`--s3_release_scale`）基础上，引入 s4.1 位置变化场：
+
+1. **位置变化场**：
+
+```
+Δx(n,t) = α · Δx_anchor(n,t)
+```
+
+1. **尺度变化场**（沿用 s3.1）：
+
+```
+Δs(n,t) = Δs_hex(n,t)
+```
+
+1. **旋转变化场**（保持 V5 默认）：
+
+```
+Δr(n,t) = (1-α) · Δr_hex(n,t)
+```
+
+其中 `α` 仍由 V5 的 learnable balance 系数给出（通常用 `--balance_alpha_init 0.99 --balance_lr 0` 固定在 0.99）。
+
+### 新增参数
+
+- `--s4_1_anchor_only_position`
+
+### case1 启动命令
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale \
+  --s4_1_anchor_only_position \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_1_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_1_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### s4.2/s4.3/s4.4：可控系数的 dx/dr 覆盖（基于 s3.1/s4.1）
+
+为精确复现固定系数（例如 1.0/0.95/0.05），新增两个参数用于覆盖 V5 分支中的融合权重：
+
+- `--s4_dx_anchor_weight wA`
+  - 作用：覆盖位置融合为 `Δx = (1-wA)·Δx_hex + wA·Δx_anchor`
+  - 默认 `-1` 表示关闭覆盖（继续使用 V5 的 `α` 或 s4.1 的 `α·Δx_anchor`）
+- `--s4_dr_hex_weight k`
+  - 作用：覆盖旋转融合为 `Δr = k·Δr_hex`
+  - 默认 `-1` 表示关闭覆盖（继续使用 V5 的 `Δr=(1-α)·Δr_hex` 或 s3.* 的 rotation 选项）
+
+#### s4.2: 在 s4.1 基础上 Δx = Δx_anchor（k=0.01）
+
+```
+Δx = 1.0·Δx_anchor
+Δs = Δs_hex
+Δr = 0.01·Δr_hex
+```
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_2_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_2_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### s4.3: 在 s4.2 基础上 Δr = 0.05·Δr_hex
+
+```
+Δx = 1.0·Δx_anchor
+Δs = Δs_hex
+Δr = 0.05·Δr_hex
+```
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.05 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_3_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_3_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### s4.4: 在 s3.1 基础上 Δx = 0.05·Δx_hex + 0.95·Δx_anchor（k=0.01）
+
+```
+Δx = 0.05·Δx_hex + 0.95·Δx_anchor
+Δs = Δs_hex
+Δr = 0.01·Δr_hex
+```
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale \
+  --s4_dx_anchor_weight 0.95 \
+  --s4_dr_hex_weight 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_4_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_4_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### s4.5: wA=1.0（纯 Anchor position），大 rotation HexPlane（k=0.1/0.5/1.0）
+
+```
+Δx = 0·Δx_hex + 1.0·Δx_anchor
+Δs = Δs_hex
+Δr = k·Δr_hex
+```
+
+##### s4.5-k0.1
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.1 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_5_k01_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_5_k01_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+##### s4.5-k0.5
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.5 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_5_k05_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_5_k05_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+##### s4.5-k1.0
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 1.0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_5_k10_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_5_k10_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### s4.6: wA=1.0（纯 Anchor position），k=0（完全禁用 rotation HexPlane）
+
+```
+Δx = 0·Δx_hex + 1.0·Δx_anchor
+Δs = Δs_hex
+Δr = 0
+```
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_6_k00_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_6_k00_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+---
+
+## [2025-12-21] 近期补充记录（参数核对/覆盖顺序/参数量统计）
+
+### 1) s4.5-k0.0 的 dirname 命名错误（但 cfg_args 真实参数为 k=0）
+
+- `log/s4_5_k0_case1_20251221_051305.log`
+  - Output: `./output/eb2dd3e3-e`
+  - `cfg_args.yml` 关键字段：
+    - `s4_dx_anchor_weight: 1.0`
+    - `s4_dr_hex_weight: 0.0`
+    - `s5_rot_nlerp: false`
+  - 但 `cfg_args.yml` 中 `dirname` 被写成：`s4_5_k10_case1_20251221_051305`（应理解为命名错误，不代表真实参数）
+
+### 2) s5.5-k1.0 并不等价于 clean s5.1：k 覆盖发生在 nlerp 之后
+
+结论：在 `use_learnable_balance` 分支中，rotation 的覆盖顺序是：
+
+1. 若 `--s5_rot_nlerp`，先得到 `dr_combined = q_fused - rotations`；
+2. 若 `--s4_dr_hex_weight k >= 0` 且满足条件（未开启 `s3_zero_rotation/s3_release_rotation/s2_anchor_to_rotation`），最后会强制：
+
+```
+dr_combined = k · dr_hex
+```
+
+因此：
+
+- `k=0` 会把 rotation 完全冻结（`dr=0`），即使开启 `--s5_rot_nlerp` 也会被覆盖掉。
+- `k=1` 会使最终 rotation 等同于 HexPlane rotation（`dr=dr_hex`），同样覆盖掉 `--s5_rot_nlerp`。
+
+对照：
+
+- `s5_5_k10_case1_20251221_052826`
+  - Output: `./output/6ad53cb6-4`
+  - `cfg_args.yml`：`s4_dx_anchor_weight=1.0, s4_dr_hex_weight=1.0, s5_rot_nlerp=true`
+
+### 3) 参数量统计与 learnable/buffer 严格区分（基于 checkpoint）
+
+以 `output/eb2dd3e3-e/ckpt/chkpnt50000.pth`（iter=50000）为例，按 checkpoint 中的张量元素数（numel）统计：
+
+#### 3.1 参数量粗分（不区分 learnable/buffer）
+
+- Gaussians（可学习参数）：`578,919`
+  - xyz: 157,887
+  - scaling: 157,887
+  - rotation: 210,516
+  - density: 52,629
+- HexPlane deform_network state_dict（总）：`47,282,248`
+  - grid/K-Planes: 47,247,366
+  - trunk_feature_out: 8,256
+  - heads（pos/scales/rot + backward + uncertainty 等）：其余
+- AnchorDeformationNet state_dict（总）：`48,456,660`
+  - 其中 `original_deformation`（embedded HexPlane）: 47,282,248
+  - 其余 anchor 网络 + KNN 缓存：1,174,412
+
+#### 3.2 learnable parameters vs buffers（严格区分）
+
+HexPlane deform_network（pack[10] / `self._deformation.state_dict()`）：
+
+- total: 47,282,248
+- learnable_params: 47,282,226
+- buffers（register_buffer: `time_poc/pos_poc/rotation_scaling_poc`）: 16
+- nonlearnable_tensors（例如 `deformation_net.grid.aabb` 为 requires_grad=False）: 6
+
+AnchorDeformationNet（pack[14] / `self._deformation_anchor.state_dict()`）：
+
+- total: 48,456,660
+- learnable_params: 47,399,982
+- buffers: 1,056,678
+
+其中（剔除 embedded HexPlane baseline `original_deformation.*` 后）：
+
+- learnable_params: 117,734
+- buffers: 1,056,678
+
+并且以下关键缓存均为 buffer（非 learnable）：
+
+- `knn_indices`: 526,290（shape = [N, K]）
+- `knn_weights`: 526,290（shape = [N, K]）
+- `anchor_positions`: 3,072（shape = [M, 3]）
+- `anchor_indices`: 1,024（shape = [M]）
+- `initialized/knn_valid`: 1/1（bool 标量）
+
+---
+
+## [2025-12-22] s4：k 与 ds_weight 消融结果汇总 + 下一轮组合实验设计
+
+### 0) 磁盘清理：删除所有实验的点云输出
+
+为节省磁盘空间，决定删除所有实验目录下的：
+
+- `output/*/point_cloud/`
+
+保留以下关键产物用于对比与复现：
+
+- `output/*/cfg_args.yml`
+- `output/*/eval/*`
+- `output/*/ckpt/*`
+
+### 1) 本轮已完成实验（iter=50000 指标）
+
+#### 1.1 k sweep（固定 wA=1.0, ds_weight=1.0）
+
+注：ds_weight=1.0 通过 `--s3_release_scale` 实现（`Δs=Δs_hex`）。
+
+| setting | log | output | PSNR2D | SSIM2D | PSNR3D_mean | SSIM3D_mean | 备注 |
+|---|---|---|---:|---:|---:|---:|---|
+| wA=1, k=0.02 | `log/s4_5_k002_case1_20251221_210537.log` | `output/27c660a3-a` | 44.1292 | 0.989998 | 45.1445 | 0.980067 | 正常 |
+| wA=1, k=0.08 | `log/s4_5_k008_case1_20251221_210540.log` | `output/5d5ac6c3-d` | 43.9678 | 0.989986 | 45.4020 | 0.980673 | 3D 最优 |
+| wA=1, k=0.9 | `log/s4_5_k09_case1_20251221_210544.log` | `output/cdf927b7-f` | NaN | NaN | 24.7051 | 0.339739 | 训练出现 NaN（loss=nan，log 报 "NaN or Inf"） |
+
+结论：
+
+- k=0.9 明确不稳定（NaN），不作为候选。
+- 在可用范围内，k=0.02 更偏 2D 指标，k=0.08 更偏 3D 指标。
+
+#### 1.2 ds_weight sweep（固定 wA=1.0, k=0.01）
+
+注：为使 `ds_weight` 可控，本组实验不使用 `--s3_release_scale`，并通过固定 `α` 实现：
+
+```
+Δs = (1-α)·Δs_hex
+ds_weight = 1-α
+```
+
+| setting | log | output | PSNR2D | SSIM2D | PSNR3D_mean | SSIM3D_mean | 备注 |
+|---|---|---|---:|---:|---:|---:|---|
+| wA=1, k=0.01, ds=0.99 | `log/s4_5_k001_ds099_case1_20251221_210852.log` | `output/096401a3-3` | 43.9916 | 0.990007 | 45.0711 | 0.980120 | 正常 |
+| wA=1, k=0.01, ds=0.90 | `log/s4_5_k001_ds090_case1_20251221_210856.log` | `output/dea48e27-6` | 44.0813 | 0.990098 | 45.3725 | 0.980672 | 本轮综合最优点之一 |
+| wA=1, k=0.01, ds=0.50 | `log/s4_5_k001_ds050_case1_20251221_210900.log` | `output/7d9673b9-2` | NaN | NaN | 24.7051 | 0.339739 | eval2d 为 NaN（疑似训练不稳定） |
+| wA=1, k=0.01, ds=0.10 | `log/s4_5_k001_ds010_case1_20251221_210903.log` | `output/c6d55162-1` | 43.7947 | 0.989728 | 45.1387 | 0.980105 | 正常但变差 |
+| wA=1, k=0.01, ds=0.01 | `log/s4_5_k001_ds001_case1_20251221_210907.log` | `output/2d954d33-f` | 43.7814 | 0.989819 | 45.1971 | 0.980275 | 正常但不占优 |
+
+结论：
+
+- ds_weight≈0.9 是明显的甜点（2D/3D 同时占优）。
+- ds_weight 太小（0.1/0.01）会退化。
+- ds_weight=0.5 出现 NaN，视为不稳定点，不作为候选。
+
+#### 1.3 wA=0 对照（dx 纯 HexPlane）
+
+对照实验：
+
+- `log/s4_wA0_k001_ds100_case1_20251221_232931.log`
+
+结论：效果不佳（符合预期：wA=0 意味 dx 完全回退到 HexPlane，Anchor 对 motion skeleton 的贡献被移除）。
+
+### 2) 下一轮最有价值的组合实验（围绕当前最优附近）
+
+当前观察到的最优邻域：
+
+- 候选中心 A：`k≈0.02, ds≈0.9`（偏 2D）
+- 候选中心 B：`k≈0.08, ds≈0.9`（偏 3D）
+
+统一设定：
+
+- 固定 `wA=1.0`（`--s4_dx_anchor_weight 1.0`）
+- 固定 `ds_weight` 通过 `α` 实现（不使用 `--s3_release_scale`）
+- `ds_weight = 1 - α`
+
+#### 2.1 围绕中心 A（k≈0.02, ds≈0.9）
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.10 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.015 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_combo_wA1_k0015_ds090_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_combo_wA1_k0015_ds090_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.10 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.025 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_combo_wA1_k0025_ds090_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_combo_wA1_k0025_ds090_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.15 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.02 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_combo_wA1_k0020_ds085_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_combo_wA1_k0020_ds085_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.05 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.02 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_combo_wA1_k0020_ds095_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_combo_wA1_k0020_ds095_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### 2.2 围绕中心 B（k≈0.08, ds≈0.9）
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.10 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.06 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_combo_wA1_k0060_ds090_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_combo_wA1_k0060_ds090_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.10 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.10 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_combo_wA1_k0100_ds090_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_combo_wA1_k0100_ds090_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.15 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.08 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_combo_wA1_k0080_ds085_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_combo_wA1_k0080_ds085_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.05 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.08 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_combo_wA1_k0080_ds095_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_combo_wA1_k0080_ds095_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### 2.3 [2025-12-22] s4_combo(wA=1) 本轮 8 个组合实验结果（优先 3D）
+
+说明：所有实验均为 `case1`，`mask_ratio=0.0`，`wA=1.0`（`--s4_dx_anchor_weight 1.0`）。其中 `ds_weight = 1 - balance_alpha_init`。
+
+| dirname | output | k (`s4_dr_hex_weight`) | ds_weight | PSNR3D_mean | SSIM3D_mean | 备注 |
+|---|---|---:|---:|---:|---:|---|
+| s4_combo_wA1_k0015_ds090_case1_20251222_025636 | `output/4e526ec0-e` | 0.015 | 0.90 | 45.353639 | 0.980733 | 稳定 |
+| s4_combo_wA1_k0020_ds085_case1_20251222_025644 | `output/cf65f2d1-a` | 0.020 | 0.85 | 45.380846 | 0.980884 | 本轮最好 |
+| s4_combo_wA1_k0020_ds095_case1_20251222_025648 | `output/f1a1f57c-0` | 0.020 | 0.95 | 45.244195 | 0.980585 | 稳定 |
+| s4_combo_wA1_k0025_ds090_case1_20251222_025640 | `output/429d08e5-d` | 0.025 | 0.90 | 36.759800 | 0.903665 | 严重退化（未 NaN） |
+| s4_combo_wA1_k0060_ds090_case1_20251222_025652 | `output/407f63bf-0` | 0.060 | 0.90 | 24.705123 | 0.339739 | NaN 崩溃 |
+| s4_combo_wA1_k0080_ds085_case1_20251222_025659 | `output/9e0c0257-2` | 0.080 | 0.85 | 44.981205 | 0.979276 | 稳定但下降 |
+| s4_combo_wA1_k0080_ds095_case1_20251222_025703 | `output/fb8f4148-a` | 0.080 | 0.95 | 43.975829 | 0.974935 | 稳定但明显下降 |
+| s4_combo_wA1_k0100_ds090_case1_20251222_025655 | `output/8fcc286b-7` | 0.100 | 0.90 | 45.145577 | 0.979993 | 稳定 |
+
+结论（用于下一轮设计）：
+
+- **k 的稳定性呈现非单调**：`k=0.06` 直接崩溃；`k≈0.015~0.02` 表现最好且稳定。
+- **ds_weight 并非越大越好**：在 `k=0.02` 与 `k=0.08` 附近，`ds=0.85` 相比 `ds=0.95` 更稳定/更高。
+- `k=0.025, ds=0.90` 出现严重退化，建议做重复跑来判断是否“偶发坏解/随机种子问题”。
+
+#### 2.4 下一轮：更合理的 8 个新实验（含额外 k001 ds09）
+
+设计原则：集中精修 `k≈0.0125~0.02` 与 `ds≈0.85~0.90`，并增加一个 `k=0.01, ds=0.90` 作为你要求的对照；同时保留 `k=0.025, ds=0.90` 做复现验证。
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.15 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.0125 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_next_wA1_k00125_ds085_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_next_wA1_k00125_ds085_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.10 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.0125 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_next_wA1_k00125_ds090_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_next_wA1_k00125_ds090_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.15 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.015 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_next_wA1_k0015_ds085_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_next_wA1_k0015_ds085_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.10 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.0175 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_next_wA1_k00175_ds090_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_next_wA1_k00175_ds090_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.15 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.02 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_next_wA1_k0020_ds085_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_next_wA1_k0020_ds085_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.10 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.02 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_next_wA1_k0020_ds090_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_next_wA1_k0020_ds090_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.10 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.025 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_next_wA1_k0025_ds090_case1_repeat_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_next_wA1_k0025_ds090_case1_repeat_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.10 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_next_wA1_k0010_ds090_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_next_wA1_k0010_ds090_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### 2.5 [2025-12-23] s4_next(wA=1) 本轮 8 个实验结果（优先 3D）
+
+说明：本轮为 `2.4` 中的 `s4_next_*` 实际跑出的结果。`ds_weight = 1 - balance_alpha_init`。
+
+| dirname | output | k (`s4_dr_hex_weight`) | ds_weight | PSNR3D_mean | SSIM3D_mean | 备注 |
+|---|---|---:|---:|---:|---:|---|
+| s4_next_wA1_k00125_ds085_case1_20251222_225310 | `output/1a11ecda-d` | 0.0125 | 0.85 | 24.705123 | 0.339739 | NaN 崩溃 |
+| s4_next_wA1_k00125_ds090_case1_20251222_225310 | `output/8ee24fc3-2` | 0.0125 | 0.90 | 45.376411 | 0.980655 | 稳定 |
+| s4_next_wA1_k0015_ds085_case1_20251222_225310 | `output/9e69cfe6-8` | 0.0150 | 0.85 | 45.209491 | 0.980570 | 稳定 |
+| s4_next_wA1_k00175_ds090_case1_20251222_225310 | `output/5934d912-b` | 0.0175 | 0.90 | 45.447739 | 0.980683 | 本轮最好 |
+| s4_next_wA1_k0020_ds085_case1_20251222_225310 | `output/291226de-5` | 0.0200 | 0.85 | 45.162651 | 0.980145 | 稳定 |
+| s4_next_wA1_k0020_ds090_case1_20251222_225310 | `output/dafd60eb-f` | 0.0200 | 0.90 | 24.705123 | 0.339739 | NaN 崩溃 |
+| s4_next_wA1_k0025_ds090_case1_repeat_20251222_225310 | `output/9d50f1d6-5` | 0.0250 | 0.90 | 45.379347 | 0.980707 | 稳定（复现后正常） |
+| s4_next_wA1_k0010_ds090_case1_20251222_225311 | `output/2bcd5b64-8` | 0.0100 | 0.90 | 45.150013 | 0.979998 | 稳定 |
+
+结论（用于下一轮设计）：
+
+- 本轮最优点在 `k=0.0175, ds=0.90`。
+- 出现明显的 **k 与 ds 的耦合不稳定带**：`k=0.0125, ds=0.85` 与 `k=0.0200, ds=0.90` 均 NaN 崩溃。
+- `k=0.025, ds=0.90` 本轮复现后正常且接近最优，可作为第二分支继续探索。
+
+#### 2.6 下一轮：围绕最优点与 k=0.025 分支的 8 个新实验（wA=1）
+
+设计原则：以 `k=0.0175, ds=0.90` 为中心做小步搜索，并对 `k=0.025` 分支做 ds±0.02 探索；避免已知不稳定组合（例如 `k=0.0200, ds=0.90`）。
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.10 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.016 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_next2_wA1_k0016_ds090_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_next2_wA1_k0016_ds090_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.08 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.0175 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_next2_wA1_k00175_ds092_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_next2_wA1_k00175_ds092_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.12 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.0175 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_next2_wA1_k00175_ds088_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_next2_wA1_k00175_ds088_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.10 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.0185 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_next2_wA1_k00185_ds090_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_next2_wA1_k00185_ds090_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.10 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.019 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_next2_wA1_k0019_ds090_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_next2_wA1_k0019_ds090_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.10 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.015 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_next2_wA1_k0015_ds090_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_next2_wA1_k0015_ds090_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.08 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.025 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_next2_wA1_k0025_ds092_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_next2_wA1_k0025_ds092_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.12 --balance_lr 0 \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.025 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4_next2_wA1_k0025_ds088_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4_next2_wA1_k0025_ds088_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### 2.7 [2025-12-23] s4_next2(wA=1) 本轮 8 个实验结果（优先 3D）
+
+说明：本轮为 `2.6` 中的 `s4_next2_*` 实际跑出的结果。`ds_weight = 1 - balance_alpha_init`。
+
+| dirname | output | k (`s4_dr_hex_weight`) | ds_weight | PSNR3D_mean | SSIM3D_mean | 备注 |
+|---|---|---:|---:|---:|---:|---|
+| s4_next2_wA1_k0016_ds090_case1_20251223_041753 | `output/fba41c91-7` | 0.0160 | 0.90 | 45.408836 | 0.980750 | 稳定 |
+| s4_next2_wA1_k00175_ds092_case1_20251223_041753 | `output/bea98ca4-c` | 0.0175 | 0.92 | 45.439277 | 0.980953 | 本轮最好 |
+| s4_next2_wA1_k00175_ds088_case1_20251223_041753 | `output/bb3c9617-e` | 0.0175 | 0.88 | 45.275594 | 0.980504 | 稳定 |
+| s4_next2_wA1_k00185_ds090_case1_20251223_041753 | `output/af171d3c-d` | 0.0185 | 0.90 | 45.364124 | 0.980564 | 稳定 |
+| s4_next2_wA1_k0019_ds090_case1_20251223_041753 | `output/6f7be48a-d` | 0.0190 | 0.90 | 45.216299 | 0.980348 | 稳定 |
+| s4_next2_wA1_k0015_ds090_case1_20251223_041753 | `output/0991f8e5-4` | 0.0150 | 0.90 | 45.080593 | 0.980101 | 稳定 |
+| s4_next2_wA1_k0025_ds092_case1_20251223_041753 | `output/0ab22030-b` | 0.0250 | 0.92 | 45.053810 | 0.979267 | 稳定但退化 |
+| s4_next2_wA1_k0025_ds088_case1_20251223_041755 | `output/2edd6d7a-c` | 0.0250 | 0.88 | 45.270483 | 0.980818 | 稳定 |
+
+结论（用于下一轮设计）：
+
+- 在已验证稳定的区域里，`k` 最优集中在 `0.016~0.0185`，其中 `k=0.0175` 表现最强。
+- 在 `k=0.0175` 下，`ds` 从 `0.88 -> 0.92` 有明显增益（0.92 最好）。
+- 在 `k=0.025` 下，`ds=0.88` 明显优于 `ds=0.92`，提示 `k` 与 `ds` 依然存在耦合。
+- 结合上一轮 `s4_next` 的 NaN 结论（`k=0.020, ds=0.90` 与 `k=0.0125, ds=0.85`），后续应尽量避免跨越式扫参，优先做局部小步精修。
+
+下一步建议（不强制）：
+
+- 以 `k=0.0175` 为中心，继续细化 `ds`：`0.91/0.92/0.93`，并对 `k` 做 ±0.001 微调（`0.0165/0.0175/0.0185`）。
+- 以 `k=0.025` 分支，只在 `ds=0.86~0.90` 附近探索（避免 `ds=0.92`）。
+
+---
+
+## [2025-12-20] s5：将 dx 的融合思想拓展到 ds/dr（逐步实验）
+
+### 背景
+
+V5 在 position 上的核心融合是：
+
+```
+Δx = (1-α)·Δx_hex + α·Δx_anchor
+```
+
+在 s5 系列中，我们尝试将同样的“结构（Anchor）+ 残差（HexPlane）”融合思想，拓展到 scale 与 rotation。
+
+### 新增参数
+
+- `--s5_rot_nlerp`：rotation 使用单位四元数 nlerp（绝对旋转融合）
+- `--s5_scale_log_fusion`：scale 使用 log-space 融合（乘性更新）
+- `--s5_jacobian_sr`：从 Anchor 位移场 u(x) 估计 Jacobian 并做 polar 分解，得到 Anchor 的 (scale,rotation) reference
+- `--s5_jacobian_k`：Jacobian 估计的邻域 K（默认 8）
+- `--s5_eps`：数值稳定 epsilon（默认 1e-8）
+
+### s5.0（baseline）：只做 dx 融合（ds/dr 沿用旧逻辑）
+
+对应当前默认 V5/s3.* 的 ds/dr 逻辑。
+
+### s5.1：Rotation nlerp 融合（reference=原始 rotations）
+
+```
+q_hex = rotations_hex
+q_ref = rotations
+q_new = normalize((1-wA)·q_hex + wA·q_ref)
+```
+
+开启：`--s5_rot_nlerp`
+
+### s5.2：Scale log-space 融合（reference=原始 scales）
+
+```
+s_hex = scales_hex
+s_ref = scales
+log(s_new) = (1-wA)·log(s_hex) + wA·log(s_ref)
+```
+
+开启：`--s5_scale_log_fusion`
+
+### s5.3：Jacobian→polar 分解得到 Anchor SR reference
+
+从 Anchor 位移场 u(x) 估计局部 Jacobian：
+
+```
+F = I + ∂u/∂x
+polar(F) ≈ R · S
+```
+
+使用 R 给旋转 reference，S 的奇异值给 scale reference（目前实现为 isotropic log-stretch）。
+
+开启：`--s5_jacobian_sr --s5_jacobian_k 8`
+
+### s5.4：组合（推荐对照）：log-scale + rot-nlerp + jacobian SR
+
+开启：`--s5_scale_log_fusion --s5_rot_nlerp --s5_jacobian_sr --s5_jacobian_k 8`
+
+### case1 启动命令模板（wA 与 dx 一致）
+
+说明：wA 取自 dx 的融合权重（若设置了 `--s4_dx_anchor_weight` 则使用该值，否则使用 learnable balance 的 α）。
+
+#### s5.1(case1)
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale \
+  --s5_rot_nlerp \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s5_1_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s5_1_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### s5.2(case1)
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale \
+  --s5_scale_log_fusion \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s5_2_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s5_2_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### s5.4(case1)（log-scale + rot-nlerp + jacobian SR reference）
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale \
+  --s5_scale_log_fusion --s5_rot_nlerp \
+  --s5_jacobian_sr --s5_jacobian_k 8 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s5_4_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s5_4_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### s5.5：在 wA=1.0（纯 Anchor position）基础上加入 s5.1（rot nlerp），并对照 k=0/0.01/1.0
+
+```
+Δx = 0·Δx_hex + 1.0·Δx_anchor
+Δs = Δs_hex
+Δr: 先做 q_new = nlerp(q_hex, q_ref)，再用 k·Δr_hex 覆盖（对照实验）
+```
+
+#### s5.5-k00(case1)
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.0 \
+  --s5_rot_nlerp \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s5_5_k00_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s5_5_k00_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### s5.5-k001(case1)
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 0.01 \
+  --s5_rot_nlerp \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s5_5_k001_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s5_5_k001_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### s5.5-k10(case1)
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_dr_hex_weight 1.0 \
+  --s5_rot_nlerp \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s5_5_k10_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s5_5_k10_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### s5.6：使用 s5.1 + s5.3，不使用 s5.2（避免 scale log 融合 NaN）
+
+```
+Δx: 沿用 V5（或 s4 的 wA 覆盖）
+Δs: 沿用 s3.*（此处为 s3_release_scale -> Δs=Δs_hex）
+Δr: rot nlerp，reference 来自 Jacobian→polar（Anchor 位移场）
+```
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale \
+  --s5_rot_nlerp \
+  --s5_jacobian_sr --s5_jacobian_k 8 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s5_6_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s5_6_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```

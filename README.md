@@ -169,6 +169,23 @@ nohup python train.py -s data/dir_4d_case1.pickle \
   > log/train_physx_boosted_v16_3_w1_mask50_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
 
 # ========================================================
+# M 系列实验结果汇总
+# ========================================================
+# 
+# | 系列 | 最优配置 | psnr3d | ssim3d | 说明 |
+# |------|----------|--------|--------|------|
+# | M1.x | M1.2 g=0.05 | 45.30 | 0.981 | HexPlane 权重 6% |
+# | M2.x | M2.1a freeze_rho | 45.33 | 0.980 | 冻结前 2000 步 ★推荐★ |
+# | M3 | LP knn v2 | 45.09 | 0.979 | LP 正则化无提升 |
+# | M4 | jac v2 | 45.09 | 0.980 | decoupling 无提升 |
+#
+# 关键发现:
+# 1. M2.1a freeze_rho 是最优配置
+# 2. M3/M4 正则化未能超越 M2.1 baseline
+# 3. M2.2 残差归一化有害 (-6~7 dB)
+# 4. 详细结果见 CHANGELOG_physx_gaussian.md
+#
+# ========================================================
 
 # M1: Uncertainty-Gated Adaptive Fusion
 
@@ -483,10 +500,44 @@ nohup python train.py -s data/dir_4d_case1_sparse50.pickle \
 nohup python train.py -s data/dir_4d_case1_sparse50.pickle \
   --use_anchor_deformation --use_boosted \
   --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
-  --lambda_prior 0.0 --lambda_tv 0.0 \
-  --iterations 50000 --test_iterations 10000 20000 30000 40000 50000 \
-  --save_iterations 30000 50000 --save_checkpoint \
+  --mask_ratio 0.0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
   > log/train_sparse50_physx_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# 5. 稀疏视角数据集 - M1.2 g005 (uncertainty-gated small perturbation)
+
+nohup python train.py -s data/dir_4d_case1_sparse50.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --fusion_mode uncertainty_gated \
+  --gate_tau 0.0 --gate_lambda 1.0 \
+  --gamma_max 0.005 \
+  --m1_lambda_gate 0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  > log/train_sparse50_m1_2_g005_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+
+# 6. 稀疏视角数据集 - M2.1a freeze_rho (bounded perturbation + trust-region)
+
+nohup python train.py -s data/dir_4d_case1_sparse50.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode bounded_perturb \
+  --schedule_mode freeze_rho --freeze_steps 2000 \
+  --eps_max 0.03 --eps_init 0.015 \
+  --mask_ratio 0.0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  > log/train_sparse50_m2_1a_freeze_$(date +%Y%m%d_%H%M%S).log 2>&1 &
 
 ```
 
@@ -542,6 +593,438 @@ nohup /root/miniconda3/envs/x2_gaussian/bin/python train.py -s /root/autodl-tmp/
 | `--lambda_phys` | 0.1 | Weight for physics completion loss L_phys |
 | `--lambda_anchor_smooth` | 0.01 | Weight for anchor motion smoothness |
 | `--phys_warmup_steps` | 2000 | Steps before applying L_phys |
+
+### M5: Phase-Aware Trust-Region ε(t)
+
+**Paper narrative**: *"Phase-aware trust-region allocates a bounded residual budget across respiratory phases, preserving Lagrangian dominance while enabling demand-driven corrections."*
+
+M5 upgrades the global scalar ε from M2.1a to a time-conditioned ε(t):
+
+```text
+ε(t) = ε_max * sigmoid(g(t))
+```
+
+This allows different breathing phases to have different residual budgets.
+
+#### M5 Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--phase_eps_enable` | False | Master switch for M5 |
+| `--phase_eps_mode` | per_frame | Mode: `per_frame` or `tiny_mlp` |
+| `--phase_eps_num_frames` | 10 | Number of discrete phases (per_frame) |
+| `--phase_eps_mlp_hidden` | 32 | MLP hidden dim (tiny_mlp) |
+| `--phase_eps_mlp_layers` | 2 | MLP layers (tiny_mlp) |
+| `--phase_eps_smooth_lambda` | 1e-4 | Weight for L_smooth prior |
+
+#### M5 Training Commands
+
+**重要**: 必须包含 `--use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0` 以匹配历史最佳 baseline (psnr3d ~45)。
+
+```bash
+# M5 Baseline (M2.1a + V5 balance)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode bounded_perturb \
+  --schedule_mode freeze_rho --freeze_steps 2000 \
+  --eps_max 0.03 --eps_init 0.015 --mask_ratio 0.0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname m5_baseline_$(date +%Y%m%d_%H%M%S) \
+  > log/m5_baseline_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# M5-per_frame
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode bounded_perturb \
+  --schedule_mode freeze_rho --freeze_steps 2000 \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --phase_eps_enable --phase_eps_mode per_frame \
+  --phase_eps_num_frames 10 --phase_eps_smooth_lambda 1e-4 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname m5_perframe_$(date +%Y%m%d_%H%M%S) \
+  > log/m5_perframe_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# M5-tiny_mlp
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode bounded_perturb \
+  --schedule_mode freeze_rho --freeze_steps 2000 \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --phase_eps_enable --phase_eps_mode tiny_mlp \
+  --phase_eps_mlp_hidden 32 --phase_eps_mlp_layers 2 \
+  --phase_eps_smooth_lambda 1e-4 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname m5_tinymlp_$(date +%Y%m%d_%H%M%S) \
+  > log/m5_tinymlp_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### Visualize ε(t) Curve
+
+```bash
+python scripts/visualize_phase_eps.py --model_path output/xxx/ --output_dir plots/
+```
+
+### M6: High-Pass Structural Decomposition
+
+**Paper narrative**: *"Unlike penalty-based regularization, we enforce a structural frequency split of the Eulerian residual in the forward pass, allocating a bounded correction budget to the high-frequency component to prevent shortcut learning."*
+
+M6 decomposes the Eulerian residual into low/high frequency components:
+
+```text
+r = Φ_E - Φ_L        # Eulerian residual
+r_low = LP(r)         # Low-frequency (neighbor average)
+r_high = r - r_low    # High-frequency
+Φ = Φ_L + ε_high·r_high + ε_low·r_low
+```
+
+#### M6 Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--hpass_enable` | False | Master switch for M6 |
+| `--hpass_lp_mode` | knn_cached | LP mode: `graph` or `knn_cached` |
+| `--hpass_k` | 8 | Number of neighbors for LP |
+| `--hpass_eps_low_mode` | zero | Low-freq budget: `zero`, `tied`, `bounded_small` |
+| `--hpass_eps_low_max` | 0.005 | Max ε_low for bounded_small mode |
+
+#### M6 Training Commands
+
+**重要**: 必须包含 `--use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0` 以匹配历史最佳 baseline。
+
+```bash
+# M6-tied (sanity check - 应与 baseline 结果一致)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode bounded_perturb \
+  --schedule_mode freeze_rho --freeze_steps 2000 \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --hpass_enable --hpass_eps_low_mode tied \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname m6_tied_$(date +%Y%m%d_%H%M%S) \
+  > log/m6_tied_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# M6-hard (main experiment - 硬高通，ε_low=0)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode bounded_perturb \
+  --schedule_mode freeze_rho --freeze_steps 2000 \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --hpass_enable --hpass_eps_low_mode zero \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname m6_hard_$(date +%Y%m%d_%H%M%S) \
+  > log/m6_hard_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### M7: High-Pass Decomposition on M1.2
+
+M7 applies M6's high-pass frequency decomposition to M1.2 (uncertainty_gated) fusion mode.
+
+```text
+r = Φ_E - Φ_L                    # Eulerian residual
+r_low = LP(r), r_high = r - r_low  # Frequency decomposition
+Φ = Φ_L + hex_weight · (r_high + tied_factor · r_low)
+```
+
+**tied mode**: When `tied_factor = 1.0`, mathematically degenerates to original M1.2.
+
+```bash
+# M7-tied (M1.2 g005 + hpass tied)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode uncertainty_gated --gamma_max 0.005 --gate_tau 0.0 --gate_lambda 1.0 \
+  --hpass_enable --hpass_eps_low_mode tied \
+  --mask_ratio 0.0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname m7_tied_$(date +%Y%m%d_%H%M%S) \
+  > log/m7_tied_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### M8: Transport-Correction Decomposition (Predictor-Corrector)
+
+**Paper narrative**: *"Instead of parallel blending, we decompose into serial predictor-corrector: Lagrangian transport followed by Eulerian closure in the comoving frame."*
+
+```text
+1. Predictor (Lagrangian transport):  x' = x + Φ_L(x,t)
+2. Corrector (Eulerian at x'):        Δ = Φ_E(x',t)  [comoving frame]
+3. Update (budgeted residual):        x(t) = x' + ε·Δ
+```
+
+**Key insight**: Residual evaluated in comoving frame (at x') naturally cannot learn large-scale transport already captured by Φ_L.
+
+#### M8 Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--transport_correct_enable` | False | Master switch for M8 |
+| `--transport_correct_eps` | 0.01 | Fixed ε for residual |
+| `--transport_correct_comoving` | True | Query Eulerian at x' (True) or x (False) |
+| `--transport_correct_learnable_beta` | False | Learn spatially-varying β(x',t) |
+| `--transport_correct_beta_max` | 0.03 | Max β value |
+| `--transport_correct_beta_budget` | 0.01 | Budget constraint: E[β] ≤ budget |
+
+#### M8 Training Commands
+
+```bash
+# M8 comoving (main - Eulerian queries at transported position)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --transport_correct_enable --transport_correct_comoving \
+  --transport_correct_eps 0.01 \
+  --mask_ratio 0.0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname m8_comoving_$(date +%Y%m%d_%H%M%S) \
+  > log/m8_comoving_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# M8 learnable beta (learn β(x',t) + budget constraint)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --transport_correct_enable --transport_correct_comoving \
+  --transport_correct_learnable_beta \
+  --transport_correct_beta_max 0.03 --transport_correct_beta_init 0.01 \
+  --transport_correct_beta_budget 0.01 --transport_correct_lambda_budget 0.1 \
+  --mask_ratio 0.0 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 7000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname m8_learnable_beta_$(date +%Y%m%d_%H%M%S) \
+  > log/m8_learnable_beta_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### s1 Series: Per-Anchor Small-Perturbation
+
+s1 extends M1.2's global γ to per-anchor γᵢ(t), enabling spatially-varying uncertainty-aware gating.
+
+#### s1: Per-Anchor γᵢ (no extra regularization)
+
+**Goal**: Verify if per-anchor γᵢ brings stable gains over global γ.
+
+```text
+s_E(i,t) = Σ_x wᵢ(x)·s_E(x,t) / (Σ_x wᵢ(x) + ε)  # Aggregate to anchors
+γᵢ = γ_max * tanh((τ - s_E(i,t)) / λ)             # Per-anchor γ
+γ(x,t) = Σ wᵢ(x)·γᵢ                               # Interpolate to Gaussians
+Φ = (0.99 - γ(x,t))·Φ_L + (0.01 + γ(x,t))·Φ_E    # Fusion (β_eff ∈ [0.005, 0.015])
+```
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode uncertainty_gated --gamma_max 0.005 \
+  --gate_tau 0.0 --gate_lambda 1.0 \
+  --per_anchor_gamma \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --dirname s1_per_anchor_gamma_$(date +%Y%m%d_%H%M%S) \
+  > log/s1_per_anchor_gamma_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### s1.1: s1 + Anchor Graph Spatial Smoothness
+
+**Goal**: Prevent checkerboard gate patterns. L_graph = λ · Σ_{(i,j)∈E} (γᵢ - γⱼ)²
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode uncertainty_gated --gamma_max 0.005 \
+  --gate_tau 0.0 --gate_lambda 1.0 \
+  --per_anchor_gamma --lambda_gamma_graph 0.01 \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --dirname s1_1_graph_smooth_$(date +%Y%m%d_%H%M%S) \
+  > log/s1_1_graph_smooth_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### s1.2: s1 + Temporal Smoothness
+
+**Goal**: Suppress flickering. L_temp = λ · Σᵢ |γᵢ(t) - γᵢ(t-Δt)|²
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode uncertainty_gated --gamma_max 0.005 \
+  --gate_tau 0.0 --gate_lambda 1.0 \
+  --per_anchor_gamma --lambda_gamma_temp 0.01 \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --dirname s1_2_temp_smooth_$(date +%Y%m%d_%H%M%S) \
+  > log/s1_2_temp_smooth_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### s1.3: s1 + Spatial + Temporal Smoothness
+
+**Goal**: Combine s1.1 (spatial) and s1.2 (temporal) smoothness.
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --fusion_mode uncertainty_gated --gamma_max 0.005 \
+  --gate_tau 0.0 --gate_lambda 1.0 \
+  --per_anchor_gamma --lambda_gamma_graph 0.01 --lambda_gamma_temp 0.01 \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --dirname s1_3_graph_temp_smooth_$(date +%Y%m%d_%H%M%S) \
+  > log/s1_3_graph_temp_smooth_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### s1 Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--per_anchor_gamma` | False | Enable per-anchor γᵢ (s1 mode) |
+| `--lambda_gamma_graph` | 0.0 | s1.1: Weight for spatial smoothness |
+| `--lambda_gamma_temp` | 0.0 | s1.2: Weight for temporal smoothness |
+| `--gamma_temp_dt` | 0.1 | s1.2: Time delta for temporal smoothness |
+
+### s2 Series: Anchor Fusion for Scale/Rotation
+
+s2 extends V5's anchor fusion from position-only to also include scale and/or rotation.
+
+**V5 baseline**:
+
+```text
+dx = (1-α)*dx_hex + α*dx_anchor
+ds = (1-α)*ds_hex
+dr = (1-α)*dr_hex
+```
+
+#### s2.1: Anchor Fusion to Scale
+
+**Goal**: Test if scale also benefits from anchor fusion.
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s2_anchor_to_scale \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --dirname s2_1_anchor_to_scale_$(date +%Y%m%d_%H%M%S) \
+  > log/s2_1_anchor_to_scale_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### s2.2: Anchor Fusion to Rotation
+
+**Goal**: Test if rotation also benefits from anchor fusion.
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s2_anchor_to_rotation \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --dirname s2_2_anchor_to_rotation_$(date +%Y%m%d_%H%M%S) \
+  > log/s2_2_anchor_to_rotation_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### s2.3: Anchor Fusion to Scale + Rotation
+
+**Goal**: Test both scale and rotation with anchor fusion.
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s2_anchor_to_scale --s2_anchor_to_rotation \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --dirname s2_3_anchor_to_scale_rotation_$(date +%Y%m%d_%H%M%S) \
+  > log/s2_3_anchor_to_scale_rotation_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### s2 Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--s2_anchor_to_scale` | False | s2.1/s2.3: Add α*dx_anchor to ds |
+| `--s2_anchor_to_rotation` | False | s2.2/s2.3: Add α*dx_anchor to dr |
+
+### s3 Series: Release Scale/Rotation from (1-α)
+
+s3 "releases" scale/rotation from the (1-α) multiplier, letting HexPlane's scale/rotation keep full strength.
+
+**V5 baseline** (scale/rotation are suppressed by (1-α) ≈ 0.01):
+
+```text
+dx = (1-α)*dx_hex + α*dx_anchor
+ds = (1-α)*ds_hex   # ≈ 0.01 * ds_hex
+dr = (1-α)*dr_hex   # ≈ 0.01 * dr_hex
+```
+
+#### s3.1: Release Scale
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --dirname s3_1_release_scale_$(date +%Y%m%d_%H%M%S) \
+  > log/s3_1_release_scale_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### s3.2: Release Rotation
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_rotation \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --dirname s3_2_release_rotation_$(date +%Y%m%d_%H%M%S) \
+  > log/s3_2_release_rotation_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### s3.3: Release Scale + Rotation
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --s3_release_scale --s3_release_rotation \
+  --mask_ratio 0.0 --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --dirname s3_3_release_scale_rotation_$(date +%Y%m%d_%H%M%S) \
+  > log/s3_3_release_scale_rotation_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+#### s3 Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--s3_release_scale` | False | s3.1/s3.3: ds = ds_hex (not multiplied by 1-α) |
+| `--s3_release_rotation` | False | s3.2/s3.3: dr = dr_hex (not multiplied by 1-α) |
 
 #### Fallback to Original Method
 
