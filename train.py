@@ -2258,6 +2258,46 @@ if __name__ == "__main__":
     parser.add_argument("--coarse_iter", type=int, default=5000)
     parser.add_argument("--dirname", type=str, default="DEBUG")
     args = parser.parse_args(sys.argv[1:])
+
+    # Load configuration files
+    # NOTE: Config provides defaults, but command-line flags should take precedence.
+    # The previous behavior overwrote CLI values with config, which caused --source_path
+    # and --dirname overrides to be ignored.
+    if args.config is not None:
+        print(f"Loading configuration file from {args.config}")
+        cfg = load_config(args.config)
+
+        argv = sys.argv[1:]
+
+        def _cli_provided(*names: str) -> bool:
+            for n in names:
+                prefix = n + "="
+                for tok in argv:
+                    if tok == n or tok.startswith(prefix):
+                        return True
+            return False
+
+        cli_args = vars(args)
+        for key, cfg_val in cfg.items():
+            if key not in cli_args:
+                continue
+
+            # Keep CLI value if the user explicitly provided this option.
+            # Otherwise, fall back to config.
+            keep_cli = _cli_provided(f"--{key}")
+            if key == "source_path":
+                keep_cli = keep_cli or _cli_provided("-s")
+
+            if not keep_cli:
+                cli_args[key] = cfg_val
+
+        # If the user specified a custom dirname on CLI, make output folder follow it.
+        # This avoids reusing the model_path stored in the config file (e.g. case1),
+        # which would otherwise cause all runs to write into the same ./output/... folder.
+        if (not _cli_provided("--model_path")) and _cli_provided("--dirname"):
+            cli_args["model_path"] = osp.join("./output", str(cli_args["dirname"]))
+
+    # Post-process iterations AFTER config merge so they match final args.
     args.save_iterations.append(args.iterations)
     args.test_iterations.append(args.iterations)
     args.test_iterations.append(1)
@@ -2272,14 +2312,6 @@ if __name__ == "__main__":
 
     # Initialize system state (RNG)
     safe_state(args.quiet)
-
-    # Load configuration files
-    args_dict = vars(args)
-    if args.config is not None:
-        print(f"Loading configuration file from {args.config}")
-        cfg = load_config(args.config)
-        for key in list(cfg.keys()):
-            args_dict[key] = cfg[key]
 
     # Set up logging writer
     tb_writer = prepare_output_and_logger(args, dirname)
