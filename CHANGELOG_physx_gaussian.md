@@ -284,6 +284,27 @@ wget -O data/init_dir_4d_case5.npy "https://hf-mirror.com/datasets/vortex778/X2G
 
 当 `--source_path data/dir_4d_case3.pickle` 时，初始化逻辑会自动寻找同目录的 `data/init_dir_4d_case3.npy`（见 `x2_gaussian/gaussian/initialize.py`）。
 
+
+### 实测：aria2c 更快更稳（推荐）
+
+case3（pickle）：
+
+```bash
+aria2c -c -x 16 -s 16 -k 1M --max-tries=0 --retry-wait=5 --timeout=60   -o dir_4d_case3.pickle   -d /root/autodl-tmp/4dctgs/x2-gaussian-main-origin/data   "https://hf-mirror.com/datasets/vortex778/X2GS/resolve/main/DIR/dir_4d_case3.pickle?download=true"
+```
+
+case4（npy，建议低并发避免 TLS handshake 抖动）：
+
+```bash
+aria2c -c -x 4 -s 4 -k 1M --max-tries=0 --retry-wait=5 --timeout=60   -o init_dir_4d_case4.npy   -d /root/autodl-tmp/4dctgs/x2-gaussian-main-origin/data   "https://hf-mirror.com/datasets/vortex778/X2GS/resolve/main/DIR/init_dir_4d_case4.npy?download=true"
+```
+
+case5（pickle）：
+
+```bash
+aria2c -c -x 16 -s 16 -k 1M --max-tries=0 --retry-wait=5 --timeout=60   -o dir_4d_case5.pickle   -d /root/autodl-tmp/4dctgs/x2-gaussian-main-origin/data   "https://hf-mirror.com/datasets/vortex778/X2GS/resolve/main/DIR/dir_4d_case5.pickle?download=true"
+```
+
 ### case3 nohup（基于 case1 A0 baseline 的 config，直接覆盖 source_path）
 
 ```bash
