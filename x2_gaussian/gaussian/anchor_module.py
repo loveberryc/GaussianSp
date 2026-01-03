@@ -635,6 +635,22 @@ class AnchorDeformationNet(nn.Module):
         self.num_layers = getattr(args, 'transformer_layers', 2)
         self.time_embed_dim = getattr(args, 'anchor_time_embed_dim', 16)
         self.pos_embed_dim = getattr(args, 'anchor_pos_embed_dim', 32)
+
+        self.lambda_anchor_distortion = getattr(args, 'lambda_anchor_distortion', 0.0)
+        self.lambda_anchor_time = getattr(args, 'lambda_anchor_time', 0.0)
+        self.anchor_time_delta = getattr(args, 'anchor_time_delta', 0.05)
+        self.anchor_time_eps = getattr(args, 'anchor_time_eps', 1e-8)
+        self.anchor_time_stopgrad_neighbors = getattr(args, 'anchor_time_stopgrad_neighbors', True)
+        self.anchor_distortion_k = getattr(args, 'anchor_distortion_k', 8)
+        self.anchor_distortion_r_min = getattr(args, 'anchor_distortion_r_min', 0.6)
+        self.anchor_distortion_r_max = getattr(args, 'anchor_distortion_r_max', 1.6)
+        self.anchor_distortion_eps = getattr(args, 'anchor_distortion_eps', 1e-6)
+        self.anchor_distortion_sigma = getattr(args, 'anchor_distortion_sigma', 0.0)
+
+        self._anchor_graph_edges = None
+        self._anchor_graph_d0 = None
+        self._anchor_graph_w = None
+        self._anchor_mass = None
         
         # Mask decay scheduler (v2 feature)
         # When enabled, mask_ratio decays linearly from mask_decay_start to 0
@@ -861,6 +877,15 @@ class AnchorDeformationNet(nn.Module):
         # - Rendering uses UNMASKED output (full power)
         # - L_phys separately supervises masked prediction
         self.use_decoupled_mask = getattr(args, 'use_decoupled_mask', False)
+
+        # a3: Ray-coverage masking for L_phys (mask under-observed anchors instead of random anchors)
+        self.phys_mask_mode = getattr(args, 'phys_mask_mode', 'random')
+        self.phys_ray_mask_ratio = float(getattr(args, 'phys_ray_mask_ratio', -1.0) or -1.0)
+        self.phys_ray_max_cams = int(getattr(args, 'phys_ray_max_cams', 128) or 128)
+        self.phys_ray_ndc_z_thresh = float(getattr(args, 'phys_ray_ndc_z_thresh', 1.0) or 1.0)
+        self._phys_ray_mask_indices = None
+        self._phys_ray_mask_order = None
+        self._phys_ray_coverage = None
         
         # V11: Pretrain-Finetune Masked Modeling
         # Stage 1: Only L_phys with high mask ratio
@@ -891,6 +916,32 @@ class AnchorDeformationNet(nn.Module):
         self.use_temporal_interp = getattr(args, 'use_temporal_interp', False)
         self.lambda_interp = getattr(args, 'lambda_interp', 0.1)
         self.interp_context_range = getattr(args, 'interp_context_range', 0.2)
+
+        self.a1_reg_enable = bool(getattr(args, 'a1_reg_enable', False))
+        self.a1_reg_lambda = float(getattr(args, 'a1_reg_lambda', 0.0) or 0.0)
+        self.a1_reg_beta = float(getattr(args, 'a1_reg_beta', 0.0) or 0.0)
+        self.a1_reg_g1_weight = float(getattr(args, 'a1_reg_g1_weight', 1.0) or 1.0)
+        self.a1_reg_g2_weight = float(getattr(args, 'a1_reg_g2_weight', 0.0) or 0.0)
+        self.a1_reg_k = int(getattr(args, 'a1_reg_k', 8) or 8)
+        self.a1_reg_weight_mode = getattr(args, 'a1_reg_weight_mode', 'power')
+        self.a1_reg_weight_power = float(getattr(args, 'a1_reg_weight_power', 1.0) or 1.0)
+        self.a1_reg_c_thresh = float(getattr(args, 'a1_reg_c_thresh', 0.5) or 0.5)
+        self.a1_reg_mask_ratio = float(getattr(args, 'a1_reg_mask_ratio', -1.0) or -1.0)
+        self.a1_reg_use_mask_decay = bool(getattr(args, 'a1_reg_use_mask_decay', False))
+        self.a1_reg_mask_decay_start = float(getattr(args, 'a1_reg_mask_decay_start', 0.5) or 0.5)
+        self.a1_reg_ema_decay = float(getattr(args, 'a1_reg_ema_decay', 0.99) or 0.99)
+
+        self._a1_c_ema = None
+        self._a1_anchor_knn_cached_k = 0
+        self._a1_anchor_knn_indices = None
+        self._last_a1_reg_loss = None
+        self._last_a1_reg_g1 = None
+        self._last_a1_reg_g2 = None
+        self._last_a1_c_mean = None
+        self._last_a1_c_min = None
+        self._last_a1_c_max = None
+        self._last_a1_mask_ratio_eff = None
+        self._last_a1_masked_indices = None
         
         # ================================================================
         # V16: Lagrangian Spatio-Temporal Masked Anchor Modeling
@@ -968,7 +1019,49 @@ class AnchorDeformationNet(nn.Module):
         # s4.1: Anchor-only position field (dx = α * dx_anchor)
         self.s4_1_anchor_only_position = getattr(args, 's4_1_anchor_only_position', False)
         self.s4_dx_anchor_weight = getattr(args, 's4_dx_anchor_weight', -1.0)
+        self.s4_ds_hex_weight = getattr(args, 's4_ds_hex_weight', -1.0)
         self.s4_dr_hex_weight = getattr(args, 's4_dr_hex_weight', -1.0)
+
+        self.s6_trust_region = getattr(args, 's6_trust_region', False)
+        self.s6_tau_pos = float(getattr(args, 's6_tau_pos', 0.0) or 0.0)
+        self.s6_tau_scale = float(getattr(args, 's6_tau_scale', 0.0) or 0.0)
+        self.s6_tau_rot = float(getattr(args, 's6_tau_rot', 0.0) or 0.0)
+        self.s6_trust_region_start_ratio = float(getattr(args, 's6_trust_region_start_ratio', 0.0) or 0.0)
+        self.s6_tau_pos_start = float(getattr(args, 's6_tau_pos_start', 0.0) or 0.0)
+        self.s6_tau_pos_end = float(getattr(args, 's6_tau_pos_end', 0.0) or 0.0)
+        self.s6_tau_scale_start = float(getattr(args, 's6_tau_scale_start', 0.0) or 0.0)
+        self.s6_tau_scale_end = float(getattr(args, 's6_tau_scale_end', 0.0) or 0.0)
+        self.s6_tau_rot_start = float(getattr(args, 's6_tau_rot_start', 0.0) or 0.0)
+        self.s6_tau_rot_end = float(getattr(args, 's6_tau_rot_end', 0.0) or 0.0)
+        self.s6_trust_region_log = bool(getattr(args, 's6_trust_region_log', False))
+        self.s6_trust_region_log_interval = int(getattr(args, 's6_trust_region_log_interval', 1000) or 1000)
+        self.s6_eps = float(getattr(args, 's6_eps', 1e-8) or 1e-8)
+        self._s6_step = 0
+
+        self.s7_per_anchor_wA = bool(getattr(args, 's7_per_anchor_wA', False))
+        self.s7_wA_base = float(getattr(args, 's7_wA_base', -1.0) or -1.0)
+        self.s7_wA_delta_max = float(getattr(args, 's7_wA_delta_max', 0.02) or 0.02)
+        self.s7_wA_only_up = bool(getattr(args, 's7_wA_only_up', False))
+        self.s7_lambda_wA_graph = float(getattr(args, 's7_lambda_wA_graph', 0.0) or 0.0)
+        self.s7_lambda_wA_temp = float(getattr(args, 's7_lambda_wA_temp', 0.0) or 0.0)
+        self.s7_wA_temp_dt = float(getattr(args, 's7_wA_temp_dt', 0.1) or 0.1)
+        self.s7_wA_graph_k = int(getattr(args, 's7_wA_graph_k', 8) or 8)
+        self.s7_wA_head = None
+        if self.s7_per_anchor_wA:
+            hidden = max(8, int(self.d_model // 2))
+            self.s7_wA_head = nn.Sequential(
+                nn.Linear(self.d_model, hidden),
+                nn.GELU(),
+                nn.Linear(hidden, 1),
+            )
+            nn.init.zeros_(self.s7_wA_head[-1].weight)
+            nn.init.zeros_(self.s7_wA_head[-1].bias)
+        self._last_s7_wA_anchor = None
+        self._last_s7_wA_anchor_prev = None
+        self._last_s7_wA_graph_loss = None
+        self._last_s7_wA_temp_loss = None
+        self._s7_anchor_knn_cached_k = 0
+        self._s7_anchor_knn_indices = None
 
         self.s5_rot_nlerp = getattr(args, 's5_rot_nlerp', False)
         self.s5_scale_log_fusion = getattr(args, 's5_scale_log_fusion', False)
@@ -1519,8 +1612,44 @@ class AnchorDeformationNet(nn.Module):
         self.anchor_indices = indices
         self.anchor_positions = points[indices].detach().clone()
         self.initialized.fill_(True)
+
+        self._build_anchor_graph()
         
         print(f"[PhysX-Gaussian] Initialized {actual_num_anchors} anchors via FPS from {num_points} points")
+
+    def _build_anchor_graph(self) -> None:
+        if not self.initialized or self.anchor_positions is None:
+            self._anchor_graph_edges = None
+            self._anchor_graph_d0 = None
+            self._anchor_graph_w = None
+            return
+
+        anchor_pos = self.anchor_positions.detach()
+        M = anchor_pos.shape[0]
+        if M < 2:
+            self._anchor_graph_edges = None
+            self._anchor_graph_d0 = None
+            self._anchor_graph_w = None
+            return
+
+        dists = torch.cdist(anchor_pos, anchor_pos, p=2)
+        k = int(max(1, min(self.anchor_distortion_k, M - 1)))
+        _, nn_idx = torch.topk(-dists, k + 1, dim=-1)
+        nn_idx = nn_idx[:, 1:]
+
+        src = torch.arange(M, device=anchor_pos.device).unsqueeze(1).expand(M, k).reshape(-1)
+        dst = nn_idx.reshape(-1)
+        edges = torch.stack([src, dst], dim=-1)
+
+        d0 = dists[src, dst]
+        w = None
+        sigma = float(self.anchor_distortion_sigma)
+        if sigma > 0:
+            w = torch.exp(-(d0 ** 2) / (sigma ** 2))
+
+        self._anchor_graph_edges = edges.detach()
+        self._anchor_graph_d0 = d0.detach()
+        self._anchor_graph_w = w.detach() if w is not None else None
     
     def update_knn_binding(self, gaussian_positions: torch.Tensor, temperature: float = 0.01) -> None:
         """
@@ -1548,6 +1677,16 @@ class AnchorDeformationNet(nn.Module):
         self.knn_indices = knn_indices.detach()
         self.knn_weights = knn_weights.detach()
         self.knn_valid.fill_(True)
+
+        M = int(self.anchor_positions.shape[0])
+        if M > 0:
+            idx = self.knn_indices.reshape(-1)
+            w = self.knn_weights.reshape(-1)
+            mass = torch.zeros((M,), device=idx.device, dtype=w.dtype)
+            mass.scatter_add_(0, idx, w)
+            self._anchor_mass = mass.detach()
+        else:
+            self._anchor_mass = None
     
     def forward_anchors(
         self,
@@ -1583,6 +1722,7 @@ class AnchorDeformationNet(nn.Module):
         self._last_anchor_displacements = None
         self._last_unmasked_displacements = None
         self._last_masked_indices = None
+        self._last_a1_mask_ratio_eff = None
         
         device = self.anchor_positions.device
         M = self.anchor_positions.shape[0]
@@ -1618,12 +1758,34 @@ class AnchorDeformationNet(nn.Module):
         else:
             # Use fixed mask_ratio (v1 behavior)
             effective_mask_ratio = self.mask_ratio
+
+        if self.a1_reg_use_mask_decay:
+            a1_mask_ratio_eff = self.a1_reg_mask_decay_start * (1.0 - iteration_ratio)
+        elif self.a1_reg_mask_ratio >= 0:
+            a1_mask_ratio_eff = self.a1_reg_mask_ratio
+        else:
+            a1_mask_ratio_eff = effective_mask_ratio
+        self._last_a1_mask_ratio_eff = float(a1_mask_ratio_eff)
         
         # Masking for BERT-style training
         # V10: When use_decoupled_mask=True, skip masking in main forward (render path)
         # Masking will be done separately in forward_anchors_masked() for L_phys
         masked_indices = None
-        should_mask = is_training and effective_mask_ratio > 0 and not self.use_decoupled_mask
+
+        # a3: For ray-coverage masking, allow forcing a nonzero mask ratio even if mask_ratio=0.
+        # When phys_ray_mask_ratio>=0 we interpret it as an explicit override.
+        phys_mask_ratio_override = None
+        if self.phys_mask_mode == 'ray_coverage' and self.phys_ray_mask_ratio >= 0:
+            phys_mask_ratio_override = float(max(0.0, min(1.0, float(self.phys_ray_mask_ratio))))
+
+        should_mask = (
+            is_training
+            and (not self.use_decoupled_mask)
+            and (
+                (effective_mask_ratio > 0)
+                or (phys_mask_ratio_override is not None and phys_mask_ratio_override > 0)
+            )
+        )
         
         # V12: Temporal Mask - mask all anchors if this time step is masked
         if self.use_temporal_mask and is_training:
@@ -1639,13 +1801,46 @@ class AnchorDeformationNet(nn.Module):
                 anchor_features[0, :] = mask_tokens.squeeze(0)
                 self._last_masked_indices = masked_indices
                 should_mask = False  # Already handled
+
+        if self.a1_reg_enable:
+            a1_masked_indices = None
+            if is_training and a1_mask_ratio_eff > 0:
+                if self.use_temporal_mask and is_training and masked_indices is not None and masked_indices.numel() == M:
+                    a1_masked_indices = masked_indices
+                else:
+                    num_mask_a1 = int(M * a1_mask_ratio_eff)
+                    if num_mask_a1 > 0:
+                        perm_a1 = torch.randperm(M, device=device)
+                        a1_masked_indices = perm_a1[:num_mask_a1]
+            self._last_a1_masked_indices = a1_masked_indices
+
+            c = torch.ones(M, device=device)
+            if a1_masked_indices is not None:
+                c[a1_masked_indices] = 0.0
+
+            if a1_mask_ratio_eff <= 0:
+                c.fill_(1.0)
+
+            if self._a1_c_ema is None or (not torch.is_tensor(self._a1_c_ema)) or self._a1_c_ema.numel() != M:
+                self._a1_c_ema = c.detach()
+            else:
+                self._a1_c_ema = (self.a1_reg_ema_decay * self._a1_c_ema + (1.0 - self.a1_reg_ema_decay) * c.detach())
+
+            self._last_a1_c_mean = float(self._a1_c_ema.mean().item())
+            self._last_a1_c_min = float(self._a1_c_ema.min().item())
+            self._last_a1_c_max = float(self._a1_c_ema.max().item())
         
         if should_mask:
-            num_mask = int(M * effective_mask_ratio)
+            # Choose how many anchors to mask.
+            mask_ratio_eff = float(phys_mask_ratio_override) if phys_mask_ratio_override is not None else float(effective_mask_ratio)
+            num_mask = int(M * mask_ratio_eff)
             if num_mask > 0:
-                # Random mask selection
-                perm = torch.randperm(M, device=device)
-                masked_indices = perm[:num_mask]
+                if self.phys_mask_mode == 'ray_coverage' and self._phys_ray_mask_order is not None and self._phys_ray_mask_order.numel() > 0:
+                    masked_indices = self._phys_ray_mask_order[:num_mask].to(device)
+                else:
+                    # Random mask selection
+                    perm = torch.randperm(M, device=device)
+                    masked_indices = perm[:num_mask]
                 
                 # Replace masked anchor features with [MASK] token
                 mask_tokens = self.mask_token.expand(1, num_mask, -1)
@@ -1685,6 +1880,135 @@ class AnchorDeformationNet(nn.Module):
             return anchor_displacements, masked_indices, anchor_features.squeeze(0)
         
         return anchor_displacements
+
+    def _a1_get_anchor_knn(self, k: int) -> torch.Tensor:
+        M = int(self.anchor_positions.shape[0])
+        k = int(max(1, min(k, M - 1)))
+        if self._a1_anchor_knn_indices is not None and self._a1_anchor_knn_cached_k == k:
+            return self._a1_anchor_knn_indices
+        with torch.no_grad():
+            anchor_pos = self.anchor_positions.detach()
+            dist_sq = torch.cdist(anchor_pos, anchor_pos, p=2) ** 2
+            dist_sq.fill_diagonal_(float('inf'))
+            _, knn = torch.topk(dist_sq, k=k, largest=False)
+            self._a1_anchor_knn_indices = knn.contiguous()
+            self._a1_anchor_knn_cached_k = k
+        return self._a1_anchor_knn_indices
+
+    def compute_a1_regularization_loss(self) -> torch.Tensor:
+        if not self.a1_reg_enable:
+            return None
+        if self._last_anchor_displacements is None:
+            return None
+        if self._a1_c_ema is None:
+            return None
+
+        device = self.anchor_positions.device
+        dx = self._last_anchor_displacements
+        M = int(dx.shape[0])
+        if M < 2:
+            return None
+
+        a_knn = self._a1_get_anchor_knn(self.a1_reg_k).to(device)  # [M, k]
+
+        c = self._a1_c_ema.to(device)
+        if self.a1_reg_weight_mode == 'hard':
+            w = (1.0 - (c >= self.a1_reg_c_thresh).float())
+        else:
+            w = (1.0 - c).clamp(0.0, 1.0)
+            if self.a1_reg_weight_mode == 'power':
+                w = w ** self.a1_reg_weight_power
+            elif self.a1_reg_weight_mode == 'square':
+                w = w ** 2
+        w = w.detach()
+
+        dx_i = dx.unsqueeze(1)              # [M, 1, 3]
+        dx_j = dx[a_knn]                    # [M, k, 3]
+        g1 = ((dx_i - dx_j) ** 2).sum(dim=-1).mean(dim=-1)  # [M]
+
+        loss_g1 = (w * g1).mean()
+        loss_g2 = None
+        g2_weight_eff = self.a1_reg_g2_weight if self.a1_reg_g2_weight != 0 else self.a1_reg_beta
+        if g2_weight_eff > 0:
+            lap = (dx_j.mean(dim=1) - dx)                # [M, 3]
+            dx_lap_j = lap[a_knn]                        # [M, k, 3]
+            g2 = ((lap.unsqueeze(1) - dx_lap_j) ** 2).sum(dim=-1).mean(dim=-1)  # [M]
+            loss_g2 = (w * g2).mean()
+
+        if self.a1_reg_g1_weight == 0 and g2_weight_eff == 0:
+            return None
+
+        reg = self.a1_reg_g1_weight * loss_g1
+        if loss_g2 is not None and g2_weight_eff != 0:
+            reg = reg + g2_weight_eff * loss_g2
+
+        self._last_a1_reg_loss = float(reg.detach().item())
+        self._last_a1_reg_g1 = float(loss_g1.detach().item())
+        self._last_a1_reg_g2 = float(loss_g2.detach().item()) if loss_g2 is not None else None
+        return reg
+
+    def get_a1_stats(self) -> dict:
+        if not self.a1_reg_enable:
+            return {}
+        return {
+            'a1_L_reg': self._last_a1_reg_loss,
+            'a1_L_g1': self._last_a1_reg_g1,
+            'a1_L_g2': self._last_a1_reg_g2,
+            'a1_c_mean': self._last_a1_c_mean,
+            'a1_c_min': self._last_a1_c_min,
+            'a1_c_max': self._last_a1_c_max,
+            'a1_mask_ratio_eff': self._last_a1_mask_ratio_eff,
+        }
+
+    def _s7_get_anchor_knn(self, k: int) -> torch.Tensor:
+        M = int(self.anchor_positions.shape[0])
+        k = int(max(1, min(k, M - 1)))
+        if self._s7_anchor_knn_indices is not None and self._s7_anchor_knn_cached_k == k:
+            return self._s7_anchor_knn_indices
+        with torch.no_grad():
+            anchor_pos = self.anchor_positions.detach()
+            dist_sq = torch.cdist(anchor_pos, anchor_pos, p=2) ** 2
+            dist_sq.fill_diagonal_(float('inf'))
+            _, knn = torch.topk(dist_sq, k=k, largest=False)
+            self._s7_anchor_knn_indices = knn.contiguous()
+            self._s7_anchor_knn_cached_k = k
+        return self._s7_anchor_knn_indices
+
+    def _s7_compute_wA(self, anchor_features: torch.Tensor, N: int, wA_base: float):
+        if (not self.s7_per_anchor_wA) or (self.s7_wA_head is None) or (anchor_features is None):
+            return None, None
+        M = int(anchor_features.shape[0])
+        knn_idx = self.knn_indices[:N]
+        knn_w = self.knn_weights[:N]
+        raw = self.s7_wA_head(anchor_features)  # [M, 1]
+        if self.s7_wA_only_up:
+            # Constrain wA to only increase from base: wA ∈ [wA_base, wA_base + delta_max]
+            # This prevents the optimizer from collapsing wA below the "sweet spot" base.
+            delta = self.s7_wA_delta_max * torch.sigmoid(raw)
+        else:
+            delta = self.s7_wA_delta_max * torch.tanh(raw)
+        wA_anchor = torch.clamp(delta + float(wA_base), 0.0, 1.0)  # [M, 1]
+        wA_neighbors = wA_anchor[knn_idx]  # [N, K, 1]
+        wA_gauss = (wA_neighbors.squeeze(-1) * knn_w).sum(dim=1, keepdim=True)  # [N, 1]
+        self._last_s7_wA_anchor = wA_anchor.squeeze(-1)
+
+        if self.s7_lambda_wA_graph > 0:
+            a_knn = self._s7_get_anchor_knn(self.s7_wA_graph_k)
+            wA_i = wA_anchor.squeeze(-1).unsqueeze(1)
+            wA_j = wA_anchor.squeeze(-1)[a_knn]
+            graph_loss = ((wA_i - wA_j) ** 2).mean()
+            self._last_s7_wA_graph_loss = self.s7_lambda_wA_graph * graph_loss
+        else:
+            self._last_s7_wA_graph_loss = None
+
+        if self.s7_lambda_wA_temp > 0 and self._last_s7_wA_anchor_prev is not None:
+            temp_loss = ((wA_anchor.squeeze(-1) - self._last_s7_wA_anchor_prev) ** 2).mean()
+            self._last_s7_wA_temp_loss = self.s7_lambda_wA_temp * temp_loss
+        else:
+            self._last_s7_wA_temp_loss = None
+
+        self._last_s7_wA_anchor_prev = wA_anchor.squeeze(-1).detach().clone()
+        return wA_gauss, wA_anchor
     
     def forward_anchors_unmasked(self, time_emb: torch.Tensor) -> torch.Tensor:
         """
@@ -1725,6 +2049,51 @@ class AnchorDeformationNet(nn.Module):
         self._last_unmasked_displacements = anchor_displacements
         
         return anchor_displacements
+
+    def build_phys_ray_coverage_mask(self, train_cameras, max_cams: Optional[int] = None) -> None:
+        if self.phys_mask_mode != 'ray_coverage':
+            return
+        if train_cameras is None or len(train_cameras) == 0:
+            return
+        device = self.anchor_positions.device
+        M = int(self.anchor_positions.shape[0])
+        if M <= 0:
+            return
+
+        max_cams = int(max_cams or self.phys_ray_max_cams)
+        cams = list(train_cameras)
+        if max_cams > 0 and len(cams) > max_cams:
+            stride = max(1, len(cams) // max_cams)
+            cams = cams[::stride][:max_cams]
+
+        with torch.no_grad():
+            anchor_pos = self.anchor_positions.detach()
+            ones = torch.ones((M, 1), dtype=anchor_pos.dtype, device=device)
+            X = torch.cat([anchor_pos, ones], dim=1)  # [M, 4]
+            coverage = torch.zeros((M,), dtype=torch.float32, device=device)
+            z_th = float(self.phys_ray_ndc_z_thresh)
+            for cam in cams:
+                P = cam.full_proj_transform.to(device)
+                # NOTE: Use row-vector convention consistent with dataset.project_point():
+                # clip = X @ world_view_transform^T @ projection_matrix^T.
+                # Since full_proj_transform = world_view_transform @ projection_matrix,
+                # we apply the transpose here.
+                clip = X @ P.T  # [M, 4]
+                w = clip[:, 3:4]
+                w_safe = torch.clamp(w, min=1e-8)
+                ndc = clip[:, :3] / w_safe
+                in_view = (
+                    (w[:, 0] > 0)
+                    & (ndc[:, 0].abs() <= 1.0)
+                    & (ndc[:, 1].abs() <= 1.0)
+                    & (ndc[:, 2].abs() <= z_th)
+                )
+                coverage += in_view.float()
+
+            self._phys_ray_coverage = coverage
+            _, order = torch.sort(coverage, descending=False)
+            self._phys_ray_mask_order = order.contiguous()
+            self._phys_ray_mask_indices = None
     
     def forward_anchors_masked(self, time_emb: torch.Tensor, iteration_ratio: float = 0.0) -> torch.Tensor:
         """
@@ -1783,17 +2152,30 @@ class AnchorDeformationNet(nn.Module):
                 mask_tokens = self.mask_token.expand(1, M, -1)
                 anchor_features[0, :] = mask_tokens.squeeze(0)
                 self._last_masked_indices = masked_indices
-        elif effective_mask_ratio > 0:
-            num_mask = int(M * effective_mask_ratio)
-            if num_mask > 0:
-                perm = torch.randperm(M, device=device)
-                masked_indices = perm[:num_mask]
-                
-                # Replace masked anchor features with [MASK] token
-                mask_tokens = self.mask_token.expand(1, num_mask, -1)
-                anchor_features[0, masked_indices] = mask_tokens.squeeze(0)
-                
-                self._last_masked_indices = masked_indices
+        else:
+            if self.phys_mask_mode == 'ray_coverage' and self._phys_ray_mask_order is not None and self._phys_ray_mask_order.numel() > 0:
+                if self.phys_ray_mask_ratio >= 0:
+                    ratio = float(self.phys_ray_mask_ratio)
+                    ratio = float(max(0.0, min(1.0, ratio)))
+                    num_mask = int(M * ratio)
+                else:
+                    num_mask = int(M * effective_mask_ratio)
+                if num_mask > 0:
+                    masked_indices = self._phys_ray_mask_order[:num_mask].to(device)
+                    mask_tokens = self.mask_token.expand(1, num_mask, -1)
+                    anchor_features[0, masked_indices] = mask_tokens.squeeze(0)
+                    self._last_masked_indices = masked_indices
+            elif effective_mask_ratio > 0:
+                num_mask = int(M * effective_mask_ratio)
+                if num_mask > 0:
+                    perm = torch.randperm(M, device=device)
+                    masked_indices = perm[:num_mask]
+                    
+                    # Replace masked anchor features with [MASK] token
+                    mask_tokens = self.mask_token.expand(1, num_mask, -1)
+                    anchor_features[0, masked_indices] = mask_tokens.squeeze(0)
+                    
+                    self._last_masked_indices = masked_indices
         
         # Transformer encoding
         anchor_features = self.transformer(anchor_features)  # [1, M, d_model]
@@ -1878,6 +2260,54 @@ class AnchorDeformationNet(nn.Module):
 
     def _quat_normalize(self, q: torch.Tensor) -> torch.Tensor:
         return q / (torch.norm(q, dim=-1, keepdim=True) + self.s5_eps)
+
+    def _clamp_norm(self, x: torch.Tensor, tau: float, dim: int = -1) -> torch.Tensor:
+        if tau is None or tau <= 0:
+            return x
+        n = torch.norm(x, dim=dim, keepdim=True)
+        # scale = min(1, tau / (n + eps))
+        scale = torch.clamp(tau / (n + self.s6_eps), max=1.0)
+        return x * scale
+
+    def _clamp_norm_with_stats(self, x: torch.Tensor, tau: float, dim: int = -1):
+        if tau is None or tau <= 0:
+            stats = {
+                'tau': float(tau or 0.0),
+                'clamp_ratio': 0.0,
+                'mean_scale': 1.0,
+                'mean_norm': 0.0,
+                'mean_norm_clamped': 0.0,
+            }
+            return x, stats
+        n = torch.norm(x, dim=dim, keepdim=True)
+        scale = torch.clamp(tau / (n + self.s6_eps), max=1.0)
+        x_clamped = x * scale
+        scale_flat = scale.detach().view(-1)
+        n_flat = n.detach().view(-1)
+        stats = {
+            'tau': float(tau),
+            'clamp_ratio': float((scale_flat < 1.0).float().mean().item()) if scale_flat.numel() > 0 else 0.0,
+            'mean_scale': float(scale_flat.mean().item()) if scale_flat.numel() > 0 else 1.0,
+            'mean_norm': float(n_flat.mean().item()) if n_flat.numel() > 0 else 0.0,
+            'mean_norm_clamped': float((n_flat * scale_flat).mean().item()) if n_flat.numel() > 0 else 0.0,
+        }
+        return x_clamped, stats
+
+    def _s6_tau(self, tau_fixed: float, tau_start: float, tau_end: float, iteration_ratio: float) -> float:
+        if tau_fixed is not None and tau_fixed > 0:
+            return float(tau_fixed)
+        if (tau_start is None or tau_start <= 0) and (tau_end is None or tau_end <= 0):
+            return 0.0
+        t = float(iteration_ratio)
+        t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+        return float((1.0 - t) * float(tau_start) + t * float(tau_end))
+
+    def _trust_region_scale_delta(self, scales: torch.Tensor, ds: torch.Tensor, tau_scale: float) -> torch.Tensor:
+        # Note: in this codebase `scales` are *raw* Gaussian scale parameters (logits if scale_bound is enabled).
+        # We therefore implement a safe trust-region in the raw-delta space by limiting ||ds||.
+        if tau_scale is None or tau_scale <= 0:
+            return ds
+        return self._clamp_norm(ds, tau_scale, dim=-1)
 
     def _quat_from_matrix(self, R: torch.Tensor) -> torch.Tensor:
         t = R[..., 0, 0] + R[..., 1, 1] + R[..., 2, 2]
@@ -2006,9 +2436,15 @@ class AnchorDeformationNet(nn.Module):
             self._last_dr_hex = dr_hex
             
             # Step 2: Anchor displacement (physical skeleton correction)
-            anchor_displacements = self.forward_anchors(
-                time_emb, is_training=is_training, iteration_ratio=iteration_ratio
-            )
+            anchor_features_s7 = None
+            if self.s7_per_anchor_wA:
+                anchor_displacements, _, anchor_features_s7 = self.forward_anchors(
+                    time_emb, is_training=is_training, return_all_info=True, iteration_ratio=iteration_ratio
+                )
+            else:
+                anchor_displacements = self.forward_anchors(
+                    time_emb, is_training=is_training, iteration_ratio=iteration_ratio
+                )
             dx_anchor = self.interpolate_displacements(anchor_displacements, gaussian_positions)
             
             # Cache anchor displacement
@@ -2648,13 +3084,9 @@ class AnchorDeformationNet(nn.Module):
                     # Normal case: use sigmoid for smooth interpolation
                     alpha = torch.sigmoid(self.balance_logit)  # α ∈ (0, 1)
                     wA_used = None
-                    if self.s4_dx_anchor_weight is not None and self.s4_dx_anchor_weight >= 0:
-                        # s4.2/s4.4: override position fusion weight
-                        # dx = (1-wA) * dx_hex + wA * dx_anchor
-                        wA = float(self.s4_dx_anchor_weight)
-                        wA_used = wA
-                        dx_combined = (1 - wA) * dx_hex + wA * dx_anchor
-                    elif self.s4_1_anchor_only_position:
+                    # NOTE: S4 fixed fusion is implemented as a dedicated branch (independent of learnable balance).
+                    # Here we keep V5 semantics: dx fusion follows alpha unless s4_1 is enabled.
+                    if self.s4_1_anchor_only_position:
                         # s4.1: dx = α * dx_anchor (remove HexPlane position contribution)
                         wA_used = alpha
                         dx_combined = alpha * dx_anchor
@@ -2729,12 +3161,126 @@ class AnchorDeformationNet(nn.Module):
                 dx_combined = dx_hex + dx_anchor
                 ds_combined = ds_hex
                 dr_combined = dr_hex
-            
+
+            # ================================================================
+            # S4 (independent fixed fusion): explicit (wA, ds_weight, k)
+            # Trigger when any s4_* weight is set, regardless of use_learnable_balance.
+            # This is designed to remove reliance on learnable balance/alpha.
+            # ================================================================
+            s4_use_wA = (self.s4_dx_anchor_weight is not None and self.s4_dx_anchor_weight >= 0)
+            s4_use_ds = (self.s4_ds_hex_weight is not None and self.s4_ds_hex_weight >= 0)
+            s4_use_k = (self.s4_dr_hex_weight is not None and self.s4_dr_hex_weight >= 0)
+            if s4_use_wA or s4_use_ds or s4_use_k:
+                if s4_use_wA:
+                    wA_base = float(self.s4_dx_anchor_weight)
+                    if self.s7_per_anchor_wA and self.s7_wA_base is not None and self.s7_wA_base >= 0:
+                        wA_base = float(self.s7_wA_base)
+                    if self.s7_per_anchor_wA and anchor_features_s7 is not None:
+                        wA_gauss, _ = self._s7_compute_wA(anchor_features_s7, dx_hex.shape[0], wA_base)
+                        if wA_gauss is not None:
+                            dx_combined = (1 - wA_gauss) * dx_hex + wA_gauss * dx_anchor
+                        else:
+                            dx_combined = (1 - wA_base) * dx_hex + wA_base * dx_anchor
+                    else:
+                        dx_combined = (1 - wA_base) * dx_hex + wA_base * dx_anchor
+                # If not set, keep whatever dx_combined was computed by the active mode.
+
+                if s4_use_ds:
+                    ds_weight = float(self.s4_ds_hex_weight)
+                    ds_combined = ds_weight * ds_hex
+                # If not set, keep ds_combined as computed by the active mode.
+
+                if (
+                    s4_use_k
+                    and (not self.s3_zero_rotation)
+                    and (not self.s3_release_rotation)
+                    and (not self.s2_anchor_to_rotation)
+                ):
+                    k = float(self.s4_dr_hex_weight)
+                    dr_combined = k * dr_hex
+                # If not set, keep dr_combined as computed by the active mode.
+
+            # ================================================================
+            # S6 (Trust-Region Geometric Fusion): stabilize dx/ds/dr updates
+            # ================================================================
+            if self.s6_trust_region and (float(iteration_ratio) >= float(self.s6_trust_region_start_ratio)):
+                tau_pos = self._s6_tau(self.s6_tau_pos, self.s6_tau_pos_start, self.s6_tau_pos_end, iteration_ratio)
+                tau_scale = self._s6_tau(self.s6_tau_scale, self.s6_tau_scale_start, self.s6_tau_scale_end, iteration_ratio)
+                tau_rot = self._s6_tau(self.s6_tau_rot, self.s6_tau_rot_start, self.s6_tau_rot_end, iteration_ratio)
+
+                do_log = bool(getattr(self.args, 'debug', False)) and self.s6_trust_region_log
+                if do_log:
+                    self._s6_step += 1
+
+                if tau_pos > 0:
+                    if do_log:
+                        dx_combined, dx_stats = self._clamp_norm_with_stats(dx_combined, tau_pos, dim=-1)
+                    else:
+                        dx_combined = self._clamp_norm(dx_combined, tau_pos, dim=-1)
+
+                if tau_scale > 0:
+                    if do_log:
+                        ds_combined, ds_stats = self._clamp_norm_with_stats(ds_combined, tau_scale, dim=-1)
+                    else:
+                        ds_combined = self._clamp_norm(ds_combined, tau_scale, dim=-1)
+
+                if tau_rot > 0:
+                    if do_log:
+                        dr_combined, dr_stats = self._clamp_norm_with_stats(dr_combined, tau_rot, dim=-1)
+                    else:
+                        dr_combined = self._clamp_norm(dr_combined, tau_rot, dim=-1)
+
+                if do_log and (self._s6_step % max(int(self.s6_trust_region_log_interval), 1) == 0):
+                    parts = [
+                        f"[TRGF] step={self._s6_step} ratio={float(iteration_ratio):.4f}",
+                    ]
+                    if tau_pos > 0:
+                        parts.append(
+                            f"dx(tau={dx_stats['tau']:.4g}) clamp={dx_stats['clamp_ratio']:.3f} mean_scale={dx_stats['mean_scale']:.3f} "
+                            f"mean_norm={dx_stats['mean_norm']:.4g} mean_norm_clamped={dx_stats['mean_norm_clamped']:.4g}"
+                        )
+                    if tau_scale > 0:
+                        parts.append(
+                            f"ds(tau={ds_stats['tau']:.4g}) clamp={ds_stats['clamp_ratio']:.3f} mean_scale={ds_stats['mean_scale']:.3f} "
+                            f"mean_norm={ds_stats['mean_norm']:.4g} mean_norm_clamped={ds_stats['mean_norm_clamped']:.4g}"
+                        )
+                    if tau_rot > 0:
+                        parts.append(
+                            f"dr(tau={dr_stats['tau']:.4g}) clamp={dr_stats['clamp_ratio']:.3f} mean_scale={dr_stats['mean_scale']:.3f} "
+                            f"mean_norm={dr_stats['mean_norm']:.4g} mean_norm_clamped={dr_stats['mean_norm_clamped']:.4g}"
+                        )
+                    print(' | '.join(parts), flush=True)
+
             deformed_positions = gaussian_positions + dx_combined
             deformed_scales = scales + ds_combined
             deformed_rotations = rotations + dr_combined
             
             return deformed_positions, deformed_scales, deformed_rotations
+
+    def get_s7_statistics(self) -> dict:
+        if (not self.s7_per_anchor_wA) or (self._last_s7_wA_anchor is None):
+            return None
+        wA = self._last_s7_wA_anchor
+        return {
+            'wA_mean': wA.mean().item(),
+            'wA_std': wA.std().item(),
+            'wA_min': wA.min().item(),
+            'wA_max': wA.max().item(),
+            'graph_loss': self._last_s7_wA_graph_loss.item() if self._last_s7_wA_graph_loss is not None else None,
+            'temp_loss': self._last_s7_wA_temp_loss.item() if self._last_s7_wA_temp_loss is not None else None,
+            'lambda_graph': self.s7_lambda_wA_graph,
+            'lambda_temp': self.s7_lambda_wA_temp,
+        }
+
+    def get_s7_loss(self) -> torch.Tensor:
+        if not self.s7_per_anchor_wA:
+            return None
+        total_loss = None
+        if self._last_s7_wA_graph_loss is not None:
+            total_loss = self._last_s7_wA_graph_loss if total_loss is None else total_loss + self._last_s7_wA_graph_loss
+        if self._last_s7_wA_temp_loss is not None:
+            total_loss = self._last_s7_wA_temp_loss if total_loss is None else total_loss + self._last_s7_wA_temp_loss
+        return total_loss
         
         # ================================================================
         # Non-Boosted Mode: Anchor-only (original PhysX-Gaussian behavior)
@@ -2895,6 +3441,83 @@ class AnchorDeformationNet(nn.Module):
         loss = F.l1_loss(masked_pred, teacher_pred)
         
         return loss
+
+    def compute_anchor_time_smooth_loss(self, time_emb: torch.Tensor) -> torch.Tensor:
+        if self.lambda_anchor_time <= 0:
+            return torch.tensor(0.0, device=self.anchor_positions.device)
+        if not self.initialized:
+            return torch.tensor(0.0, device=self.anchor_positions.device)
+
+        device = self.anchor_positions.device
+        if time_emb.dim() > 0:
+            t = time_emb[0, 0] if time_emb.dim() == 2 else time_emb[0]
+        else:
+            t = time_emb
+
+        dt = float(self.anchor_time_delta)
+        if dt <= 0:
+            return torch.tensor(0.0, device=device)
+
+        t_val = float(t.item())
+        t_prev_val = max(0.0, t_val - dt)
+        t_next_val = min(1.0, t_val + dt)
+        if t_prev_val == t_val or t_next_val == t_val:
+            return torch.tensor(0.0, device=device)
+
+        t_prev = torch.tensor(t_prev_val, device=device, dtype=t.dtype)
+        t_next = torch.tensor(t_next_val, device=device, dtype=t.dtype)
+
+        dx_t = self.forward_anchors_unmasked(time_emb)
+
+        if bool(self.anchor_time_stopgrad_neighbors):
+            with torch.no_grad():
+                dx_prev = self.forward_anchors_unmasked(t_prev.unsqueeze(0))
+                dx_next = self.forward_anchors_unmasked(t_next.unsqueeze(0))
+        else:
+            dx_prev = self.forward_anchors_unmasked(t_prev.unsqueeze(0))
+            dx_next = self.forward_anchors_unmasked(t_next.unsqueeze(0))
+
+        acc = (dx_next - 2.0 * dx_t + dx_prev)
+        acc_sq = (acc ** 2).sum(dim=-1)
+
+        if self._anchor_mass is not None and torch.is_tensor(self._anchor_mass) and self._anchor_mass.numel() == acc_sq.numel():
+            m = self._anchor_mass.to(device=device, dtype=acc_sq.dtype)
+            denom = (m.sum() + float(self.anchor_time_eps))
+            loss = (m * acc_sq).sum() / denom
+        else:
+            loss = acc_sq.mean()
+
+        return loss
+
+    def compute_anchor_distortion_loss(self) -> torch.Tensor:
+        if self._last_anchor_displacements is None:
+            return torch.tensor(0.0, device=self.anchor_positions.device)
+        if self._anchor_graph_edges is None or self._anchor_graph_d0 is None:
+            return torch.tensor(0.0, device=self.anchor_positions.device)
+
+        edges = self._anchor_graph_edges
+        src = edges[:, 0]
+        dst = edges[:, 1]
+
+        a = self.anchor_positions.detach()
+        dx = self._last_anchor_displacements
+        p = a + dx
+
+        d = torch.norm(p[src] - p[dst], dim=-1)  # [E]
+        d0 = self._anchor_graph_d0
+        eps = float(self.anchor_distortion_eps)
+        r = d / (d0 + eps)
+
+        r_min = float(self.anchor_distortion_r_min)
+        r_max = float(self.anchor_distortion_r_max)
+        hi = F.relu(r - r_max) ** 2
+        lo = F.relu(r_min - r) ** 2
+        per_edge = hi + lo
+
+        if self._anchor_graph_w is not None:
+            per_edge = self._anchor_graph_w * per_edge
+
+        return per_edge.mean()
     
     def compute_anchor_smoothness_loss(self) -> torch.Tensor:
         """
@@ -3353,6 +3976,8 @@ class AnchorDeformationNet(nn.Module):
         params.extend(self.displacement_head_backward.parameters())
         params.extend(self.scale_head.parameters())
         params.extend(self.rotation_head.parameters())
+        if self.s7_wA_head is not None:
+            params.extend(self.s7_wA_head.parameters())
         params.append(self.mask_token)
         # V16: Include mask flag embedding if enabled
         if self.use_spatiotemporal_mask:

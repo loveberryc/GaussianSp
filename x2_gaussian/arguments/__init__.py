@@ -587,7 +587,36 @@ class ModelHiddenParams(ParamGroup):
         # PhysX-Gaussian loss parameters
         self.lambda_phys = 0.1  # Weight for physics completion loss L_phys
         self.lambda_anchor_smooth = 0.01  # Weight for anchor motion smoothness regularization
+        self.lambda_anchor_distortion = 0.0
+        self.lambda_anchor_time = 0.0
+        self.anchor_time_delta = 0.05
+        self.anchor_time_eps = 1e-8
+        self.anchor_time_stopgrad_neighbors = True
+        self.anchor_distortion_k = 8
+        self.anchor_distortion_r_min = 0.6
+        self.anchor_distortion_r_max = 1.6
+        self.anchor_distortion_eps = 1e-6
+        self.anchor_distortion_sigma = 0.0
         self.phys_warmup_steps = 2000  # Steps before applying L_phys (allow basic structure to form)
+
+        self.phys_mask_mode = "random"  # "random" (default) or "ray_coverage" (a3)
+        self.phys_ray_mask_ratio = -1.0  # if <0, reuse mask_ratio; otherwise overrides mask_ratio for ray-coverage masking
+        self.phys_ray_max_cams = 128  # max number of training cameras used to estimate coverage (subsample for speed)
+        self.phys_ray_ndc_z_thresh = 1.0  # NDC z threshold for coverage test
+        
+        self.a1_reg_enable = False
+        self.a1_reg_lambda = 0.0
+        self.a1_reg_beta = 0.0
+        self.a1_reg_g1_weight = 1.0
+        self.a1_reg_g2_weight = 0.0
+        self.a1_reg_k = 8
+        self.a1_reg_weight_mode = "power"
+        self.a1_reg_weight_power = 1.0
+        self.a1_reg_c_thresh = 0.5
+        self.a1_reg_mask_ratio = -1.0
+        self.a1_reg_use_mask_decay = False
+        self.a1_reg_mask_decay_start = 0.5
+        self.a1_reg_ema_decay = 0.99
         
         # PhysX-Gaussian mask decay scheduler
         # When enabled, mask_ratio linearly decays from mask_decay_start to 0 over training
@@ -999,7 +1028,32 @@ class ModelHiddenParams(ParamGroup):
         self.s4_1_anchor_only_position = False  # s4.1: dx = α * dx_anchor
 
         self.s4_dx_anchor_weight = -1.0  # s4.2/s4.4: override dx fusion weight wA (dx = (1-wA)dx_hex + wA dx_anchor), -1 disables
+        self.s4_ds_hex_weight = -1.0     # s4: override scale weight ds_weight (ds = ds_weight * ds_hex), -1 disables
         self.s4_dr_hex_weight = -1.0     # s4.2/s4.3: override rotation weight k (dr = k * dr_hex), -1 disables
+
+        self.s6_trust_region = False
+        self.s6_tau_pos = 0.0
+        self.s6_tau_scale = 0.0
+        self.s6_tau_rot = 0.0
+        self.s6_trust_region_start_ratio = 0.0
+        self.s6_tau_pos_start = 0.0
+        self.s6_tau_pos_end = 0.0
+        self.s6_tau_scale_start = 0.0
+        self.s6_tau_scale_end = 0.0
+        self.s6_tau_rot_start = 0.0
+        self.s6_tau_rot_end = 0.0
+        self.s6_trust_region_log = False
+        self.s6_trust_region_log_interval = 1000
+        self.s6_eps = 1e-8
+
+        self.s7_per_anchor_wA = False
+        self.s7_wA_base = -1.0
+        self.s7_wA_delta_max = 0.02
+        self.s7_wA_only_up = False
+        self.s7_lambda_wA_graph = 0.0
+        self.s7_lambda_wA_temp = 0.0
+        self.s7_wA_temp_dt = 0.1
+        self.s7_wA_graph_k = 8
 
         # ====================================================================
         # s5: Extend dx fusion idea to ds/dr (step-by-step)
