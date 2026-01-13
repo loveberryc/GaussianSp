@@ -4,6 +4,9 @@ Compare PSNR/SSIM metrics between X2-Gaussian and STNF4D calculation methods.
 """
 
 import os
+import re
+import yaml
+from types import SimpleNamespace
 import sys
 import torch
 import numpy as np
@@ -152,12 +155,15 @@ def x2gaussian_ssim_3d(img1, img2):
     return float(np.mean(ssims))
 
 
-def evaluate_model(model_path, data_path):
+def evaluate_model(model_path, data_path, device="cuda"):
     """Evaluate a saved model with both metric methods"""
     from x2_gaussian.arguments import ModelParams, PipelineParams, ModelHiddenParams
     from x2_gaussian.gaussian import GaussianModel, query
     from x2_gaussian.dataset import Scene
     from argparse import ArgumentParser
+    from x2_gaussian.utils.image_utils import metric_vol
+
+    device = torch.device(device)
     
     # Load data
     print(f"Loading data from {data_path}...")
@@ -166,8 +172,19 @@ def evaluate_model(model_path, data_path):
     pp = PipelineParams(parser)
     hp = ModelHiddenParams(parser)
     
-    # Parse with data path
+    cfg_args_path = os.path.join(os.path.dirname(os.path.dirname(model_path)), "cfg_args.yml")
+    cfg = {}
+    if os.path.exists(cfg_args_path):
+        with open(cfg_args_path, "r") as f:
+            cfg = yaml.safe_load(f) or {}
+
     args = parser.parse_args(["-s", data_path])
+    for k, v in cfg.items():
+        try:
+            setattr(args, k, v)
+        except Exception:
+            pass
+
     model_args = lp.extract(args)
     pipe_args = pp.extract(args)
     hyper = hp.extract(args)
@@ -193,10 +210,38 @@ def evaluate_model(model_path, data_path):
         )
     
     gaussians = GaussianModel(scale_bound, hyper)
-    gaussians.load_ply(os.path.join(model_path, "point_cloud.pickle"))
-    gaussians._deformation.load_state_dict(
-        torch.load(os.path.join(model_path, "deformation.pth"))
-    )
+
+    iter_match = re.search(r"iteration_(\d+)", os.path.basename(model_path))
+    iter_num = int(iter_match.group(1)) if iter_match else None
+    ckpt_path = None
+    if iter_num is not None:
+        ckpt_path = os.path.join(os.path.dirname(os.path.dirname(model_path)), "ckpt", f"chkpnt{iter_num}.pth")
+
+    restored_from_ckpt = False
+    if ckpt_path is not None and os.path.exists(ckpt_path):
+        try:
+            ckpt = torch.load(ckpt_path, map_location=device)
+            model_tuple, _iter = ckpt
+            training_args = SimpleNamespace(**cfg)
+            gaussians.restore(model_tuple, training_args)
+            restored_from_ckpt = True
+        except Exception as e:
+            print(f"[WARN] Failed to restore from ckpt {ckpt_path}: {e}")
+
+    if not restored_from_ckpt:
+        gaussians.load_ply(os.path.join(model_path, "point_cloud.pickle"))
+        gaussians._deformation.load_state_dict(
+            torch.load(os.path.join(model_path, "deformation.pth"), map_location=device)
+        )
+
+    # GaussianModel.load_ply() creates parameters directly on CUDA.
+    # The deformation network contains registered buffers (e.g., pos_poc) that must
+    # be moved to the same device to avoid CPU/CUDA mismatches during poc_fre().
+    gaussians._deformation.to(device)
+    gaussians._deformation.eval()
+    if getattr(gaussians, "_deformation_anchor", None) is not None:
+        gaussians._deformation_anchor.to(device)
+        gaussians._deformation_anchor.eval()
     
     # Evaluate each phase
     x2g_psnrs = []
@@ -204,8 +249,14 @@ def evaluate_model(model_path, data_path):
     stnf_psnrs = []
     stnf_ssims = []
     
+    # Match train.py 3D evaluation time mapping
+    breath_cycle = 3.0
+    phase_time = breath_cycle / num_phases
+    mid_phase_time = phase_time / 2
+    scanTime = 60.0
+
     for phase_idx in range(num_phases):
-        time = phase_idx / num_phases
+        time = (mid_phase_time + phase_time * phase_idx) / scanTime
         
         print(f"\nEvaluating phase {phase_idx}/{num_phases} (time={time:.3f})...")
         
@@ -219,12 +270,12 @@ def evaluate_model(model_path, data_path):
             time=time,
             stage='fine',
         )["vol"]
+
+        vol_gt_phase = vol_gt[phase_idx].to(device)
         
-        vol_gt_phase = vol_gt[phase_idx].cuda()
-        
-        # X2-Gaussian metrics
-        x2g_psnr = x2gaussian_psnr_3d(vol_gt_phase, vol_pred)
-        x2g_ssim = x2gaussian_ssim_3d(vol_gt_phase, vol_pred)
+        # X2-Gaussian metrics (match train.py metric_vol)
+        x2g_psnr, _ = metric_vol(vol_gt_phase, vol_pred, "psnr")
+        x2g_ssim, _ = metric_vol(vol_gt_phase, vol_pred, "ssim")
         x2g_psnrs.append(x2g_psnr)
         x2g_ssims.append(x2g_ssim)
         
@@ -265,9 +316,11 @@ def main():
                         help="Path to saved model (point_cloud folder)")
     parser.add_argument("--data_path", type=str, required=True,
                         help="Path to data pickle file")
+    parser.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda"],
+                        help="Device to run evaluation on. Use cpu to avoid potential CUDA/CPU buffer mismatches.")
     args = parser.parse_args()
     
-    evaluate_model(args.model_path, args.data_path)
+    evaluate_model(args.model_path, args.data_path, device=args.device)
 
 
 if __name__ == "__main__":

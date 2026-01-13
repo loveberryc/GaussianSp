@@ -1,6 +1,751 @@
 # PhysX-Gaussian 修改日志
 <!-- markdownlint-disable MD012 MD024 MD031 MD032 MD040 -->
 
+2025-01-05
+python initialize_pcd.py --data data/100_HM.pickle
+
+nohup python train.py -s data/100_HM.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname 100_HM_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_100_HM_baseline.log 2>&1 &
+
+python initialize_pcd.py --data data/101_HM.pickle
+
+nohup python train.py -s data/101_HM.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname 101_HM_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_101_HM_baseline.log 2>&1 &
+
+python initialize_pcd.py --data data/102_HM.pickle
+
+nohup python train.py -s data/102_HM.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname 102_HM_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_102_HM_baseline.log 2>&1 &
+
+python initialize_pcd.py --data data/103_HM.pickle
+
+nohup python train.py -s data/103_HM.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname 103_HM_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_103_HM_baseline.log 2>&1 &
+
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/100_HM.pickle \
+  --dirname 20260105_100_HM_np0ns0_A0 \
+  > log/20260105_100_HM_np0ns0_A0_0to100k.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/101_HM.pickle \
+  --dirname 20260105_101_HM_np0ns0_A0 \
+  > log/20260105_101_HM_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/102_HM.pickle \
+  --dirname 20260105_102_HM_np0ns0_A0 \
+  > log/20260105_102_HM_np0ns0_A0_0to100k.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/103_HM.pickle \
+  --dirname 20260105_103_HM_np0ns0_A0 \
+  > log/20260105_103_HM_np0ns0_A0_0to100k.log 2>&1 &
+
+
+python initialize_pcd.py --data data/S01_004_256_60.pickle
+python initialize_pcd.py --data data/S02_005_256_60.pickle
+python initialize_pcd.py --data data/S04_009_256_60.pickle
+python initialize_pcd.py --data data/S08_700_256_60.pickle
+python initialize_pcd.py --data data/S12_021_256_60.pickle
+
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S01_004_256_60.pickle \
+  --dirname 20260105_S01_np0ns0_A0 \
+  > log/20260105_S01_np0ns0_A0_0to100k.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S02_005_256_60.pickle \
+  --dirname 20260105_S02_np0ns0_A0 \
+  > log/20260105_S02_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S04_009_256_60.pickle \
+  --dirname 20260105_S04_np0ns0_A0 \
+  > log/20260105_S04_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S08_700_256_60.pickle \
+  --dirname 20260105_S08_np0ns0_A0 \
+  > log/20260105_S08_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S12_021_256_60.pickle \
+  --dirname 20260105_S12_np0ns0_A0 \
+  > log/20260105_S12_np0ns0_A0_0to100k.log 2>&1 &
+  
+python initialize_pcd.py --data data/dir_4d_case1_noise0.5_sparse50.pickle
+python initialize_pcd.py --data data/dir_4d_case1_noise0.7.pickle
+python initialize_pcd.py --data data/dir_4d_case1_noise1.0.pickle
+
+nohup python train.py -s data/dir_4d_case1_noise0.5_sparse50.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname n05_sp50_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_n05_sp50_baseline.log 2>&1 &
+  
+nohup python train.py -s data/dir_4d_case1_noise0.7.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname n07_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_n07_baseline.log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1_noise0.5.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname n05_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_n05_baseline.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_noise0.5_sparse50.pickle \
+  --dirname 20260107_n05_sp50_np0ns0_A0 \
+  > log/20260107_n05_sp50_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_noise0.7.pickle \
+  --dirname 20260107_n07_np0ns0_A0 \
+  > log/20260107_n07_np0ns0_A0_0to100k.log 2>&1 &
+  
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_noise0.5.pickle \
+  --dirname 20260107_n05_np0ns0_A0 \
+  > log/20260107_n05_np0ns0_A0_0to100k.log 2>&1 &
+  
+  
+  
+nohup python train.py -s data/dir_4d_case1_noise1.0.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname n10_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_n10_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_noise0.15.pickle \
+  --dirname 20260107_n015_np0ns0_A0 \
+  > log/20260107_n015_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_noise1.0.pickle \
+  --dirname 20260107_n10_np0ns0_A0 \
+  > log/20260107_n10_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_sparse20.pickle \
+  --dirname 20260107_sp20_np0ns0_A0 \
+  > log/20260107_sp20_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_sparse50.pickle \
+  --dirname 20260107_sp50_np0ns0_A0 \
+  > log/20260107_sp50_np0ns0_A0_0to100k.log 2>&1 &
+
+
+
+python initialize_pcd.py --data data/dir_4d_case1_poisson4.pickle
+python initialize_pcd.py --data data/dir_4d_case1_gauss05.pickle
+python initialize_pcd.py --data data/dir_4d_case1_mixed_p4_g02.pickle
+
+nohup python train.py -s data/dir_4d_case1_poisson4.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname p4_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_p4_baseline.log 2>&1 &
+  
+nohup python train.py -s data/dir_4d_case1_gauss05.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname g05_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_g05_baseline.log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1_mixed_p4_g02.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname mixed_p4_g02_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_mixed_p4_g02_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_poisson4.pickle \
+  --dirname 20260107_p4_np0ns0_A0 \
+  > log/20260107_p4_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_gauss05.pickle \
+  --dirname 20260107_g05_np0ns0_A0 \
+  > log/20260107_g05_np0ns0_A0_0to100k.log 2>&1 & 
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_mixed_p4_g02.pickle \
+  --dirname 20260107_mixed_p4_g02_np0ns0_A0 \
+  > log/20260107_mixed_p4_g02_np0ns0_A0_0to100k.log 2>&1 & 
+
+python initialize_pcd.py --data data/dir_4d_case1_limited120.pickle
+python initialize_pcd.py --data data/dir_4d_case1_limited180_dual.pickle
+python initialize_pcd.py --data data/dir_4d_case1_stripe05.pickle
+
+nohup python train.py -s data/dir_4d_case1_limited120.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname l120_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_l120_baseline.log 2>&1 &
+  
+nohup python train.py -s data/dir_4d_case1_limited180_dual.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname l180d_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_l180d_baseline.log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1_stripe05.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname st05_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_st05_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_limited120.pickle \
+  --dirname 20260108_l120_np0ns0_A0 \
+  > log/20260108_l120_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_limited180_dual.pickle \
+  --dirname 20260108_l180d_np0ns0_A0 \
+  > log/20260108_l180d_np0ns0_A0_0to100k.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_stripe05.pickle \
+  --dirname 20260108_st05_np0ns0_A0 \
+  > log/20260108_st05_np0ns0_A0_0to100k.log 2>&1 &
+
+
+python initialize_pcd.py --data data/dir_4d_case1_blur_exp30.pickle
+python initialize_pcd.py --data data/dir_4d_case1_blur_mix20.pickle
+python initialize_pcd.py --data data/dir_4d_case1_blur_tavg3.pickle
+
+nohup python train.py -s data/dir_4d_case1_blur_exp30.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname bexp30_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_bexp30_baseline.log 2>&1 &
+  
+nohup python train.py -s data/dir_4d_case1_blur_mix20.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname bmix20_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_bmix20_baseline.log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1_blur_tavg3.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname btavg3_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_btavg3_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_blur_exp30.pickle \
+  --dirname 20260108_bexp30_np0ns0_A0 \
+  > log/20260108_bexp30_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_blur_mix20.pickle \
+  --dirname 20260108_bmix20_np0ns0_A0 \
+  > log/20260108_bmix20_np0ns0_A0_0to100k.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_blur_tavg3.pickle \
+  --dirname 20260108_btavg3_np0ns0_A0 \
+  > log/20260108_btavg3_np0ns0_A0_0to100k.log 2>&1 &
+
+
+python initialize_pcd.py --data data/dir_4d_case1_dead01.pickle
+python initialize_pcd.py --data data/dir_4d_case1_metal20.pickle
+python initialize_pcd.py --data data/dir_4d_case1_ring3.pickle
+
+python initialize_pcd.py --data data/dir_4d_case1_limited90.pickle
+python initialize_pcd.py --data data/dir_4d_case1_limited45.pickle
+python initialize_pcd.py --data data/dir_4d_case1_limited120_dual.pickle
+
+nohup python train.py -s data/dir_4d_case1_limited90.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname l90_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_l90_baseline.log 2>&1 &
+  
+nohup python train.py -s data/dir_4d_case1_limited45.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname l45_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_l45_baseline.log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1_limited120_dual.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname l120d_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_l120d_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_limited90.pickle \
+  --dirname 20260109_l90_np0ns0_A0 \
+  > log/20260109_l90_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_limited45.pickle \
+  --dirname 20260109_l45_np0ns0_A0 \
+  > log/20260109_l45_np0ns0_A0_0to100k.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_limited120_dual.pickle \
+  --dirname 20260109_l120d_np0ns0_A0 \
+  > log/20260109_l120d_np0ns0_A0_0to100k.log 2>&1 &
+
+**生成时间**: 2026-01-10 15:05 (更新)  
+**基于提交**: 探讨工业数据集实验的权重设置
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S01_004_256_60.pickle \
+  --dirname 20260110_S01_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  > log/20260110_S01_np0ns0_A0_s4like20251204.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/XCAT.pickle \
+  --dirname 20260110_XCAT_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  > log/20260110_XCAT_np0ns0_A0_s4like20251204.log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --lambda_prior 0.0 --lambda_tv 0.0 \
+  --iterations 50000 --test_iterations 10000 20000 30000 40000 50000 \
+  > log/train_physx_boosted_v9_alpha0.99.log 2>&1 & (例子，重点确认两件事情，v9alpha0.99和我们的0.99 0.01 0.01有没有区别，以及应用于hm数据集的效果）
+
+nohup python train.py -s data/100_HM.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --lambda_prior 0.0 --lambda_tv 0.0 \
+  --iterations 50000 --test_iterations 10000 20000 30000 40000 50000 \
+  > log/20260110_100HM_v9_0.99.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/100_HM.pickle \
+  --dirname 20260110_100HM_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint\
+  > log/20260110_100HM_np0ns0_A0_s4like20251204.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/100_HM.pickle \
+  --dirname 20260110_100HM_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  --use_anchor_deformation --use_boosted \
+  --lambda_anchor_smooth 0.01 \
+  --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  > log/20260110_100HM_np0ns0_A0_s4like20251204_anchor_smooth0.01.log 2>&1 &
+
+**S02baseline vs 001ds**
+nohup python train.py -s data/S02_005_256_60.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname S02_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_S02_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S02_005_256_60.pickle \
+  --dirname 20260110_S02_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint\
+  > log/20260110_S02_np0ns0_A0_s4like20251204.log 2>&1 &
+
+nohup python train.py -s data/S04_009_256_60.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname S04_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_S04_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S04_009_256_60.pickle \
+  --dirname 20260111_S04_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint\
+  > log/20260111_S04_np0ns0_A0_s4like20251204.log 2>&1 &
+
+nohup python train.py -s data/S08_700_256_60.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname S08_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_S08_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S08_700_256_60.pickle \
+  --dirname 20260111_S08_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint\
+  > log/20260111_S08_np0ns0_A0_s4like20251204.log 2>&1 &
+
+nohup python train.py -s data/S12_021_256_60.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname S12_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_S12_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S12_021_256_60.pickle \
+  --dirname 20260111_S12_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint\
+  > log/20260111_S12_np0ns0_A0_s4like20251204.log 2>&1 &
+
+
+**生成时间**: 2026-01-11 22:14
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case2.pickle \
+  --dirname 20260103_1620_case2_np0ns0_A0 \
+  > log/20260103_1620_case2_np0ns0_A0_0to100k.log 2>&1 &
+
+
+python tools/create_robustness_datasets.py \
+  --input data/S08_700_256_60.pickle \
+  --view_ratio 0.5
+
+python initialize_pcd.py --data data/S04_009_256_60_sparse50.pickle
+python initialize_pcd.py --data data/S08_700_256_60_sparse50.pickle
+
+nohup python train.py -s data/S04_009_256_60_sparse50.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname S04sp50_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_S04sp50_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S04_009_256_60_sparse50.pickle \
+  --dirname 20260111_S04sp50_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint\
+  > log/20260111_S04sp50_np0ns0_A0_s4like20251204.log 2>&1 &
+
+nohup python train.py -s data/S08_700_256_60_sparse50.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname S08sp50_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_S08sp50_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S08_700_256_60_sparse50.pickle \
+  --dirname 20260111_S08sp50_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint\
+  > log/20260111_S08sp50_np0ns0_A0_s4like20251204.log 2>&1 &
+
+
+**生成时间**: 2026-01-12 03:35
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case1.pickle \
+  --view_ratio 0.334
+
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case1.pickle \
+  --view_ratio 0.667
+
+python initialize_pcd.py --data data/dir_4d_case1_sparse33.pickle
+python initialize_pcd.py --data data/dir_4d_case1_sparse66.pickle
+
+nohup python train.py -s data/dir_4d_case1_sparse33.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname sp33_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp33_baseline.log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1_sparse66.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname sp66_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp66_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_sparse33.pickle \
+  --dirname 20260112_sp33_np0ns0_A0 \
+  > log/20260112_sp33_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_sparse66.pickle \
+  --dirname 20260112_sp66_np0ns0_A0 \
+  > log/20260112_sp66_np0ns0_A0_0to100k.log 2>&1 &
+
+**生成时间**: 2026-01-12 17:59
+
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case1.pickle \
+  --view_ratio 0.167
+
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case2.pickle \
+  --view_ratio 0.167
+
+python initialize_pcd.py --data data/dir_4d_case1_sparse16.pickle
+python initialize_pcd.py --data data/dir_4d_case2_sparse16.pickle
+
+nohup python train.py -s data/dir_4d_case1_sparse16.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname sp16_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp16_baseline.log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case2_sparse16.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname sp16_case2_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp16_case2_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_sparse16.pickle \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 60000\
+  --save_iterations 60000 --save_checkpoint \
+  --dirname 20260112_sp16_np0ns0_A0 \
+  > log/20260112_sp16_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case2_sparse16.pickle \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 60000 \
+  --save_iterations 60000 --save_checkpoint \
+  --dirname 20260112_sp16_case2_np0ns0_A0 \
+  > log/20260112_sp16_case2_np0ns0_A0_0to100k.log 2>&1 &
+
+
+**生成时间**: 2026-01-12 18:02 (TBD)
+nohup python train.py -s data/XCAT.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname XCAT_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_XCAT_baseline.log 2>&1 &
+
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case2.pickle \
+  --view_ratio 0.200
+
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case2.pickle \
+  --view_ratio 0.500
+
+
+python initialize_pcd.py --data data/dir_4d_case2_sparse20.pickle
+python initialize_pcd.py --data data/dir_4d_case2_sparse50.pickle
+
+nohup python train.py -s data/dir_4d_case2_sparse20.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname sp20_case2_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp20_case2_baseline.log 2>&1 &
+
+
+nohup python train.py -s data/dir_4d_case2_sparse50.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname sp50_case2_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp50_case2_baseline.log 2>&1 &
+
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case2_sparse20.pickle \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 60000\
+  --save_iterations 60000 --save_checkpoint \
+  --dirname 20260112_sp20_case2_np0ns0_A0 \
+  > log/20260112_sp20_case2_np0ns0_A0_0to100k.log 2>&1 &
+
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case2_sparse50.pickle \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 60000\
+  --save_iterations 60000 --save_checkpoint \
+  --dirname 20260112_sp50_case2_np0ns0_A0 \
+  > log/20260112_sp50_case2_np0ns0_A0_0to100k.log 2>&1 &
+  
+
+**生成时间**: 2026-01-12 03:35
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case1.pickle \
+  --view_ratio 0.40
+
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case1.pickle \
+  --view_ratio 0.60
+
+python initialize_pcd.py --data data/dir_4d_case1_sparse40.pickle
+python initialize_pcd.py --data data/dir_4d_case1_sparse60.pickle
+
+nohup python train.py -s data/dir_4d_case1_sparse40.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname sp40_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp40_baseline.log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1_sparse60.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname sp60_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp60_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_sparse40.pickle \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 60000\
+  --save_iterations 60000 --save_checkpoint \
+  --dirname 20260112_sp40_np0ns0_A0 \
+  > log/20260112_sp40_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_sparse60.pickle \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 60000\
+  --save_iterations 60000 --save_checkpoint \
+  --dirname 20260112_sp60_np0ns0_A0 \
+  > log/20260112_sp60_np0ns0_A0_0to100k.log 2>&1 &
+
+
+**生成时间**: 2026-01-13 17:25 (更新)
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case3.pickle \
+  --view_ratio 0.200
+
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case3.pickle \
+  --view_ratio 0.500
+
+
+python initialize_pcd.py --data data/dir_4d_case3_sparse20.pickle
+python initialize_pcd.py --data data/dir_4d_case3_sparse50.pickle
+
+nohup python train.py -s data/dir_4d_case3_sparse20.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname sp20_case3_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp20_case3_baseline.log 2>&1 &
+
+
+nohup python train.py -s data/dir_4d_case3_sparse50.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname sp50_case3_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp50_case3_baseline.log 2>&1 &
+
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case3_sparse20.pickle \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 60000\
+  --save_iterations 60000 --save_checkpoint \
+  --dirname 20260112_sp20_case3_np0ns0_A0 \
+  > log/20260113_sp20_case3_np0ns0_A0_0to100k.log 2>&1 &
+
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case3_sparse50.pickle \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 60000\
+  --save_iterations 60000 --save_checkpoint \
+  --dirname 20260112_sp50_case3_np0ns0_A0 \
+  > log/20260113_sp50_case3_np0ns0_A0_0to100k.log 2>&1 &
+
 **生成时间**: 2025-12-16 17:44 (更新)  
 **基于提交**: PhysX-Boosted s0/s1/s2/s3 实现
 
@@ -1998,7 +2743,7 @@ python tools/create_robustness_datasets.py \
 
 ```bash
 python tools/compare_metrics.py \
-  --model_path output/xxx/point_cloud/iteration_5000 \
+  --model_path output/20260104_xcat_np0ns0_A0/point_cloud/iteration_50000 \
   --data_path data/XCAT.pickle
 ```
 
@@ -3793,6 +4538,22 @@ python tools/create_limited_angle.py \
   --input data/dir_4d_case1.pickle \
   --angle_range 90 \
   --mode dual
+  
+# 仅保留 90° 范围
+python tools/create_limited_angle.py \
+  --input data/dir_4d_case1.pickle \
+  --angle_range 90
+  
+# 仅保留 45° 范围
+python tools/create_limited_angle.py \
+  --input data/dir_4d_case1.pickle \
+  --angle_range 45
+
+# 保留两个 60° 对立扇区
+python tools/create_limited_angle.py \
+  --input data/dir_4d_case1.pickle \
+  --angle_range 60 \
+  --mode dual
 ```
 
 ### 4. 金属伪影/条纹 (`tools/add_metal_artifacts.py`)
@@ -3812,6 +4573,12 @@ python tools/add_metal_artifacts.py \
   --input data/dir_4d_case1.pickle \
   --artifact_type stripe \
   --stripe_ratio 0.05
+
+# 坏死像素 (1% 像素坏死)
+python tools/add_metal_artifacts.py \
+  --input data/dir_4d_case1.pickle \
+  --artifact_type dead \
+  --dead_ratio 0.01
 
 # 金属伪影
 python tools/add_metal_artifacts.py \

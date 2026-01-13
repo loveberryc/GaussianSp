@@ -7,6 +7,7 @@ import os.path as osp
 import copy
 import torch
 import random
+import faulthandler
 
 sys.path.append("./")
 from x2_gaussian.utils.ct_utils import get_geometry_tigre, recon_volume
@@ -125,6 +126,11 @@ def main(
         args=init_args,
         save_path=save_path,
     )
+
+    if not args.evaluate:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
     # Evaluate using ground truth volume (for debug only)
     if args.evaluate:
         with torch.no_grad():
@@ -161,6 +167,7 @@ if __name__ == "__main__":
     np.random.seed(seed)
     torch.manual_seed(seed)
     random.seed(seed)
+    faulthandler.enable(all_threads=True)
     parser = argparse.ArgumentParser(description="Generate initialization parameters")
     init_parser = InitParams(parser)
     lp = ModelParams(parser)
