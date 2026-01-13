@@ -32,6 +32,20 @@ from x2_gaussian.dataset.cameras import Camera
 from x2_gaussian.arguments import PipelineParams
 
 
+def _assert_finite(name: str, x: torch.Tensor):
+    if x is None:
+        return
+    if not torch.is_tensor(x):
+        return
+    if not torch.isfinite(x).all():
+        finite = torch.isfinite(x)
+        finite_ratio = finite.float().mean().item() if finite.numel() > 0 else 0.0
+        x_detached = x.detach()
+        x_min = torch.nan_to_num(x_detached, nan=0.0, posinf=0.0, neginf=0.0).min().item() if x_detached.numel() > 0 else 0.0
+        x_max = torch.nan_to_num(x_detached, nan=0.0, posinf=0.0, neginf=0.0).max().item() if x_detached.numel() > 0 else 0.0
+        raise FloatingPointError(f"Non-finite tensor: {name}, finite_ratio={finite_ratio:.6f}, min={x_min:.6f}, max={x_max:.6f}, shape={tuple(x.shape)}")
+
+
 def query(
     pc: GaussianModel,
     center,
@@ -102,8 +116,18 @@ def query(
                 correction_alpha=correction_alpha,
                 is_training=False  # Query is typically for evaluation
             )
+
+    if pipe.debug:
+        _assert_finite("query/means3D_final(pre-act)", means3D_final)
+        _assert_finite("query/scales_final(pre-act)", scales_final)
+        _assert_finite("query/rotations_final(pre-act)", rotations_final)
+        _assert_finite("query/density", density)
     scales_final = pc.scaling_activation(scales_final)
     rotations_final = pc.rotation_activation(rotations_final)
+
+    if pipe.debug:
+        _assert_finite("query/scales_final(post-act)", scales_final)
+        _assert_finite("query/rotations_final(post-act)", rotations_final)
 
     vol_pred, radii = voxelizer(
         means3D=means3D_final,
@@ -213,8 +237,18 @@ def render(
             is_training=True,  # Render is called during training
             iteration_ratio=iteration_ratio
         )
+
+    if pipe.debug:
+        _assert_finite("render/means3D_final(pre-act)", means3D_final)
+        _assert_finite("render/scales_final(pre-act)", scales_final)
+        _assert_finite("render/rotations_final(pre-act)", rotations_final)
+        _assert_finite("render/density", density)
     scales_final = pc.scaling_activation(scales_final)
     rotations_final = pc.rotation_activation(rotations_final)
+
+    if pipe.debug:
+        _assert_finite("render/scales_final(post-act)", scales_final)
+        _assert_finite("render/rotations_final(post-act)", rotations_final)
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen).
     rendered_image, radii = rasterizer(
@@ -346,8 +380,18 @@ def render_prior_oneT(
             means3D_final, scales_final, rotations_final = pc.get_deformed_centers(
                 time, is_training=False  # Prior rendering doesn't need masking
             )
+
+    if pipe.debug:
+        _assert_finite("prior/means3D_final(pre-act)", means3D_final)
+        _assert_finite("prior/scales_final(pre-act)", scales_final)
+        _assert_finite("prior/rotations_final(pre-act)", rotations_final)
+        _assert_finite("prior/density", density)
     scales_final = pc.scaling_activation(scales_final)
     rotations_final = pc.rotation_activation(rotations_final)
+
+    if pipe.debug:
+        _assert_finite("prior/scales_final(post-act)", scales_final)
+        _assert_finite("prior/rotations_final(post-act)", rotations_final)
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen).
     rendered_image, radii = rasterizer(

@@ -162,7 +162,7 @@ class GaussianModel:
         self.density_activation = torch.nn.Softplus()  # use softplus for [0, +inf]
         self.density_inverse_activation = inverse_softplus
 
-        self.rotation_activation = torch.nn.functional.normalize
+        self.rotation_activation = lambda x: torch.nn.functional.normalize(x, dim=1, eps=1e-8)
 
         # print(self.scale_bound,  scale_max_bound , scale_min_bound)
 
@@ -420,12 +420,23 @@ class GaussianModel:
         
         # PhysX-Gaussian: Restore anchor network state if available
         if anchor_state is not None and self.use_anchor_deformation and self._deformation_anchor is not None:
-            self._deformation_anchor.load_state_dict(anchor_state)
+            current_anchor_sd = self._deformation_anchor.state_dict()
+            filtered_anchor_state = dict(anchor_state)
+            for k in ("knn_indices", "knn_weights"):
+                if k in filtered_anchor_state and k in current_anchor_sd:
+                    v = filtered_anchor_state[k]
+                    cv = current_anchor_sd[k]
+                    if torch.is_tensor(v) and torch.is_tensor(cv) and v.shape != cv.shape:
+                        del filtered_anchor_state[k]
+            self._deformation_anchor.load_state_dict(filtered_anchor_state, strict=False)
             print(f"[PhysX-Gaussian] Restored anchor deformation network state")
             # Print V5 balance info if available
             if hasattr(self._deformation_anchor, 'use_learnable_balance') and self._deformation_anchor.use_learnable_balance:
                 alpha = self._deformation_anchor.get_balance_alpha()
                 print(f"[PhysX-Boosted V5] Restored balance α = {alpha:.4f}")
+            # KNN binding depends on current Gaussian count; recompute after restore
+            if hasattr(self._deformation_anchor, "update_knn_binding"):
+                self._deformation_anchor.update_knn_binding(self._xyz)
 
     @property
     def get_scaling(self):

@@ -26,6 +26,22 @@ from x2_gaussian.utils.phase_gated_static import PhaseGatedStatic, apply_s2_pres
 from x2_gaussian.utils.dual_static_volume import DualStaticVolume, apply_s3_preset
 from x2_gaussian.utils.temporal_ensemble_static import TemporalEnsembleStatic, apply_s4_preset, initialize_gaussians_from_avg_ct
 
+
+def _assert_finite(name: str, x: torch.Tensor, iteration: int):
+    if x is None:
+        return
+    if not torch.is_tensor(x):
+        return
+    if not torch.isfinite(x).all():
+        finite = torch.isfinite(x)
+        finite_ratio = finite.float().mean().item() if finite.numel() > 0 else 0.0
+        x_detached = x.detach()
+        x_min = torch.nan_to_num(x_detached, nan=0.0, posinf=0.0, neginf=0.0).min().item() if x_detached.numel() > 0 else 0.0
+        x_max = torch.nan_to_num(x_detached, nan=0.0, posinf=0.0, neginf=0.0).max().item() if x_detached.numel() > 0 else 0.0
+        raise FloatingPointError(
+            f"[iter={iteration}] Non-finite tensor: {name}, finite_ratio={finite_ratio:.6f}, min={x_min:.6f}, max={x_max:.6f}, shape={tuple(x.shape)}"
+        )
+
 def apply_physx_preset(opt, hyper):
     """
     Apply PhysX-Gaussian preset: Anchor-based Spacetime Transformer.
@@ -607,6 +623,20 @@ def scene_reconstruction(
         (model_params, checkpoint_first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
         print(f"Load checkpoint {osp.basename(checkpoint)} at iteration {checkpoint_first_iter}.")
+
+    # a3: Build ray-coverage ordering for L_phys masking (fine stage only)
+    # NOTE: must run after checkpoint restore, because restore may update anchor buffers.
+    if stage == 'fine' and getattr(hyper, 'use_anchor_deformation', False) and gaussians.use_anchor_deformation:
+        if gaussians._deformation_anchor is not None and getattr(gaussians._deformation_anchor, 'phys_mask_mode', 'random') == 'ray_coverage':
+            if getattr(gaussians._deformation_anchor, '_phys_ray_mask_order', None) is None:
+                gaussians._deformation_anchor.build_phys_ray_coverage_mask(scene.getTrainCameras())
+                print("[a3] Built ray-coverage mask ordering for L_phys")
+
+    # If resuming from a late checkpoint, skip coarse stage entirely.
+    # Otherwise coarse stage would attempt to "resume" from a very large iteration.
+    if stage == 'coarse' and checkpoint_first_iter is not None and checkpoint_first_iter >= coarse_iter:
+        print(f"[Continue Training] Skipping coarse stage due to checkpoint_first_iter={checkpoint_first_iter} >= coarse_iter={coarse_iter}")
+        return
 
     # Set up loss
     use_tv = opt.lambda_tv > 0
@@ -1367,6 +1397,8 @@ def scene_reconstruction(
         if stage == 'fine' and use_anchor and gaussians.use_anchor_deformation:
             lambda_phys = getattr(hyper, 'lambda_phys', 0.1)
             lambda_anchor_smooth = getattr(hyper, 'lambda_anchor_smooth', 0.01)
+            lambda_anchor_distortion = getattr(hyper, 'lambda_anchor_distortion', 0.0)
+            lambda_anchor_time = getattr(hyper, 'lambda_anchor_time', 0.0)
             phys_warmup_steps = getattr(hyper, 'phys_warmup_steps', 2000)
             
             # PhysX-Hybrid: Residual warmup control
@@ -1425,6 +1457,25 @@ def scene_reconstruction(
                 L_anchor_smooth = gaussians.compute_anchor_smoothness_loss()
                 loss["anchor_smooth"] = L_anchor_smooth
                 loss["total"] = loss["total"] + lambda_anchor_smooth * L_anchor_smooth
+
+            if lambda_anchor_time > 0 and gaussians._deformation_anchor is not None:
+                time_tensor = torch.tensor(viewpoint_cam.time).to(gaussians.get_xyz.device)
+                L_anchor_time = gaussians._deformation_anchor.compute_anchor_time_smooth_loss(time_tensor)
+                loss["anchor_time"] = L_anchor_time
+                loss["total"] = loss["total"] + lambda_anchor_time * L_anchor_time
+
+            if lambda_anchor_distortion > 0 and gaussians._deformation_anchor is not None:
+                L_anchor_dist = gaussians._deformation_anchor.compute_anchor_distortion_loss()
+                loss["anchor_distortion"] = L_anchor_dist
+                loss["total"] = loss["total"] + lambda_anchor_distortion * L_anchor_dist
+
+            a1_reg_enable = getattr(hyper, 'a1_reg_enable', False)
+            a1_reg_lambda = getattr(hyper, 'a1_reg_lambda', 0.0)
+            if a1_reg_enable and a1_reg_lambda > 0 and gaussians._deformation_anchor is not None:
+                L_a1 = gaussians._deformation_anchor.compute_a1_regularization_loss()
+                if L_a1 is not None:
+                    loss["a1_reg"] = L_a1
+                    loss["total"] = loss["total"] + a1_reg_lambda * L_a1
             
             # V13: Consistency regularization (mask as data augmentation)
             use_consistency_mask = getattr(hyper, 'use_consistency_mask', False)
@@ -1774,7 +1825,47 @@ def scene_reconstruction(
                         if temp_loss is not None:
                             loss_str += f", L_temp={temp_loss:.6f}"
                         print(f"[s1] iter={iteration}: γ_mean={gamma_mean:.5f}, γ_std={gamma_std:.5f}{loss_str}")
+
+            # ================================================================
+            # s7: Per-Anchor wA Logging and Loss
+            # ================================================================
+            if (gaussians._deformation_anchor is not None and
+                getattr(gaussians._deformation_anchor, 's7_per_anchor_wA', False)):
+
+                s7_loss = gaussians._deformation_anchor.get_s7_loss()
+                if s7_loss is not None:
+                    loss["total"] = loss["total"] + s7_loss
+
+                s7_stats = gaussians._deformation_anchor.get_s7_statistics()
+                if s7_stats:
+                    loss["s7_wA_mean"] = s7_stats.get('wA_mean', 0)
+                    loss["s7_wA_std"] = s7_stats.get('wA_std', 0)
+                    if s7_stats.get('graph_loss') is not None:
+                        loss["s7_graph_loss"] = s7_stats.get('graph_loss', 0)
+                    if s7_stats.get('temp_loss') is not None:
+                        loss["s7_temp_loss"] = s7_stats.get('temp_loss', 0)
+
+                    if iteration % 1000 == 0:
+                        wA_mean = s7_stats.get('wA_mean', 0)
+                        wA_std = s7_stats.get('wA_std', 0)
+                        wA_min = s7_stats.get('wA_min', 0)
+                        wA_max = s7_stats.get('wA_max', 0)
+                        graph_loss = s7_stats.get('graph_loss')
+                        temp_loss = s7_stats.get('temp_loss')
+                        loss_str = ""
+                        if graph_loss is not None:
+                            loss_str += f", L_graph={graph_loss:.6f}"
+                        if temp_loss is not None:
+                            loss_str += f", L_temp={temp_loss:.6f}"
+                        print(f"[s7] iter={iteration}: wA_mean={wA_mean:.5f}, wA_std={wA_std:.5f}, wA_min={wA_min:.5f}, wA_max={wA_max:.5f}{loss_str}")
         
+        if pipe.debug:
+            _assert_finite("loss/total(pre-backward)", loss["total"], iteration)
+            _assert_finite("gaussians/_xyz", gaussians._xyz, iteration)
+            _assert_finite("gaussians/_scaling", gaussians._scaling, iteration)
+            _assert_finite("gaussians/_rotation", gaussians._rotation, iteration)
+            _assert_finite("gaussians/_density", gaussians._density, iteration)
+
         loss["total"].backward()
         
         # M2.1: Zero out ρ gradients during freeze period
@@ -1949,6 +2040,15 @@ def scene_reconstruction(
                     metrics['physx_L_phys'] = loss["phys_completion"].item() if isinstance(loss["phys_completion"], torch.Tensor) else loss["phys_completion"]
                 if "anchor_smooth" in loss:
                     metrics['physx_L_smooth'] = loss["anchor_smooth"].item() if isinstance(loss["anchor_smooth"], torch.Tensor) else loss["anchor_smooth"]
+                if "anchor_distortion" in loss:
+                    metrics['physx_L_dist'] = loss["anchor_distortion"].item() if isinstance(loss["anchor_distortion"], torch.Tensor) else loss["anchor_distortion"]
+                if "a1_reg" in loss:
+                    metrics['physx_L_a1'] = loss["a1_reg"].item() if isinstance(loss["a1_reg"], torch.Tensor) else loss["a1_reg"]
+                if gaussians._deformation_anchor is not None:
+                    a1_stats = gaussians._deformation_anchor.get_a1_stats()
+                    for k, v in a1_stats.items():
+                        if v is not None:
+                            metrics[k] = v
 
             training_report(
                 tb_writer,
@@ -2158,6 +2258,46 @@ if __name__ == "__main__":
     parser.add_argument("--coarse_iter", type=int, default=5000)
     parser.add_argument("--dirname", type=str, default="DEBUG")
     args = parser.parse_args(sys.argv[1:])
+
+    # Load configuration files
+    # NOTE: Config provides defaults, but command-line flags should take precedence.
+    # The previous behavior overwrote CLI values with config, which caused --source_path
+    # and --dirname overrides to be ignored.
+    if args.config is not None:
+        print(f"Loading configuration file from {args.config}")
+        cfg = load_config(args.config)
+
+        argv = sys.argv[1:]
+
+        def _cli_provided(*names: str) -> bool:
+            for n in names:
+                prefix = n + "="
+                for tok in argv:
+                    if tok == n or tok.startswith(prefix):
+                        return True
+            return False
+
+        cli_args = vars(args)
+        for key, cfg_val in cfg.items():
+            if key not in cli_args:
+                continue
+
+            # Keep CLI value if the user explicitly provided this option.
+            # Otherwise, fall back to config.
+            keep_cli = _cli_provided(f"--{key}")
+            if key == "source_path":
+                keep_cli = keep_cli or _cli_provided("-s")
+
+            if not keep_cli:
+                cli_args[key] = cfg_val
+
+        # If the user specified a custom dirname on CLI, make output folder follow it.
+        # This avoids reusing the model_path stored in the config file (e.g. case1),
+        # which would otherwise cause all runs to write into the same ./output/... folder.
+        if (not _cli_provided("--model_path")) and _cli_provided("--dirname"):
+            cli_args["model_path"] = osp.join("./output", str(cli_args["dirname"]))
+
+    # Post-process iterations AFTER config merge so they match final args.
     args.save_iterations.append(args.iterations)
     args.test_iterations.append(args.iterations)
     args.test_iterations.append(1)
@@ -2172,14 +2312,6 @@ if __name__ == "__main__":
 
     # Initialize system state (RNG)
     safe_state(args.quiet)
-
-    # Load configuration files
-    args_dict = vars(args)
-    if args.config is not None:
-        print(f"Loading configuration file from {args.config}")
-        cfg = load_config(args.config)
-        for key in list(cfg.keys()):
-            args_dict[key] = cfg[key]
 
     # Set up logging writer
     tb_writer = prepare_output_and_logger(args, dirname)

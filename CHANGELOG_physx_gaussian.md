@@ -1,6 +1,751 @@
 # PhysX-Gaussian 修改日志
 <!-- markdownlint-disable MD012 MD024 MD031 MD032 MD040 -->
 
+2025-01-05
+python initialize_pcd.py --data data/100_HM.pickle
+
+nohup python train.py -s data/100_HM.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname 100_HM_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_100_HM_baseline.log 2>&1 &
+
+python initialize_pcd.py --data data/101_HM.pickle
+
+nohup python train.py -s data/101_HM.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname 101_HM_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_101_HM_baseline.log 2>&1 &
+
+python initialize_pcd.py --data data/102_HM.pickle
+
+nohup python train.py -s data/102_HM.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname 102_HM_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_102_HM_baseline.log 2>&1 &
+
+python initialize_pcd.py --data data/103_HM.pickle
+
+nohup python train.py -s data/103_HM.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname 103_HM_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_103_HM_baseline.log 2>&1 &
+
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/100_HM.pickle \
+  --dirname 20260105_100_HM_np0ns0_A0 \
+  > log/20260105_100_HM_np0ns0_A0_0to100k.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/101_HM.pickle \
+  --dirname 20260105_101_HM_np0ns0_A0 \
+  > log/20260105_101_HM_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/102_HM.pickle \
+  --dirname 20260105_102_HM_np0ns0_A0 \
+  > log/20260105_102_HM_np0ns0_A0_0to100k.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/103_HM.pickle \
+  --dirname 20260105_103_HM_np0ns0_A0 \
+  > log/20260105_103_HM_np0ns0_A0_0to100k.log 2>&1 &
+
+
+python initialize_pcd.py --data data/S01_004_256_60.pickle
+python initialize_pcd.py --data data/S02_005_256_60.pickle
+python initialize_pcd.py --data data/S04_009_256_60.pickle
+python initialize_pcd.py --data data/S08_700_256_60.pickle
+python initialize_pcd.py --data data/S12_021_256_60.pickle
+
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S01_004_256_60.pickle \
+  --dirname 20260105_S01_np0ns0_A0 \
+  > log/20260105_S01_np0ns0_A0_0to100k.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S02_005_256_60.pickle \
+  --dirname 20260105_S02_np0ns0_A0 \
+  > log/20260105_S02_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S04_009_256_60.pickle \
+  --dirname 20260105_S04_np0ns0_A0 \
+  > log/20260105_S04_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S08_700_256_60.pickle \
+  --dirname 20260105_S08_np0ns0_A0 \
+  > log/20260105_S08_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S12_021_256_60.pickle \
+  --dirname 20260105_S12_np0ns0_A0 \
+  > log/20260105_S12_np0ns0_A0_0to100k.log 2>&1 &
+  
+python initialize_pcd.py --data data/dir_4d_case1_noise0.5_sparse50.pickle
+python initialize_pcd.py --data data/dir_4d_case1_noise0.7.pickle
+python initialize_pcd.py --data data/dir_4d_case1_noise1.0.pickle
+
+nohup python train.py -s data/dir_4d_case1_noise0.5_sparse50.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname n05_sp50_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_n05_sp50_baseline.log 2>&1 &
+  
+nohup python train.py -s data/dir_4d_case1_noise0.7.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname n07_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_n07_baseline.log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1_noise0.5.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname n05_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_n05_baseline.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_noise0.5_sparse50.pickle \
+  --dirname 20260107_n05_sp50_np0ns0_A0 \
+  > log/20260107_n05_sp50_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_noise0.7.pickle \
+  --dirname 20260107_n07_np0ns0_A0 \
+  > log/20260107_n07_np0ns0_A0_0to100k.log 2>&1 &
+  
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_noise0.5.pickle \
+  --dirname 20260107_n05_np0ns0_A0 \
+  > log/20260107_n05_np0ns0_A0_0to100k.log 2>&1 &
+  
+  
+  
+nohup python train.py -s data/dir_4d_case1_noise1.0.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname n10_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_n10_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_noise0.15.pickle \
+  --dirname 20260107_n015_np0ns0_A0 \
+  > log/20260107_n015_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_noise1.0.pickle \
+  --dirname 20260107_n10_np0ns0_A0 \
+  > log/20260107_n10_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_sparse20.pickle \
+  --dirname 20260107_sp20_np0ns0_A0 \
+  > log/20260107_sp20_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_sparse50.pickle \
+  --dirname 20260107_sp50_np0ns0_A0 \
+  > log/20260107_sp50_np0ns0_A0_0to100k.log 2>&1 &
+
+
+
+python initialize_pcd.py --data data/dir_4d_case1_poisson4.pickle
+python initialize_pcd.py --data data/dir_4d_case1_gauss05.pickle
+python initialize_pcd.py --data data/dir_4d_case1_mixed_p4_g02.pickle
+
+nohup python train.py -s data/dir_4d_case1_poisson4.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname p4_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_p4_baseline.log 2>&1 &
+  
+nohup python train.py -s data/dir_4d_case1_gauss05.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname g05_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_g05_baseline.log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1_mixed_p4_g02.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname mixed_p4_g02_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_mixed_p4_g02_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_poisson4.pickle \
+  --dirname 20260107_p4_np0ns0_A0 \
+  > log/20260107_p4_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_gauss05.pickle \
+  --dirname 20260107_g05_np0ns0_A0 \
+  > log/20260107_g05_np0ns0_A0_0to100k.log 2>&1 & 
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_mixed_p4_g02.pickle \
+  --dirname 20260107_mixed_p4_g02_np0ns0_A0 \
+  > log/20260107_mixed_p4_g02_np0ns0_A0_0to100k.log 2>&1 & 
+
+python initialize_pcd.py --data data/dir_4d_case1_limited120.pickle
+python initialize_pcd.py --data data/dir_4d_case1_limited180_dual.pickle
+python initialize_pcd.py --data data/dir_4d_case1_stripe05.pickle
+
+nohup python train.py -s data/dir_4d_case1_limited120.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname l120_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_l120_baseline.log 2>&1 &
+  
+nohup python train.py -s data/dir_4d_case1_limited180_dual.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname l180d_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_l180d_baseline.log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1_stripe05.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname st05_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_st05_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_limited120.pickle \
+  --dirname 20260108_l120_np0ns0_A0 \
+  > log/20260108_l120_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_limited180_dual.pickle \
+  --dirname 20260108_l180d_np0ns0_A0 \
+  > log/20260108_l180d_np0ns0_A0_0to100k.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_stripe05.pickle \
+  --dirname 20260108_st05_np0ns0_A0 \
+  > log/20260108_st05_np0ns0_A0_0to100k.log 2>&1 &
+
+
+python initialize_pcd.py --data data/dir_4d_case1_blur_exp30.pickle
+python initialize_pcd.py --data data/dir_4d_case1_blur_mix20.pickle
+python initialize_pcd.py --data data/dir_4d_case1_blur_tavg3.pickle
+
+nohup python train.py -s data/dir_4d_case1_blur_exp30.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname bexp30_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_bexp30_baseline.log 2>&1 &
+  
+nohup python train.py -s data/dir_4d_case1_blur_mix20.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname bmix20_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_bmix20_baseline.log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1_blur_tavg3.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname btavg3_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_btavg3_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_blur_exp30.pickle \
+  --dirname 20260108_bexp30_np0ns0_A0 \
+  > log/20260108_bexp30_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_blur_mix20.pickle \
+  --dirname 20260108_bmix20_np0ns0_A0 \
+  > log/20260108_bmix20_np0ns0_A0_0to100k.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_blur_tavg3.pickle \
+  --dirname 20260108_btavg3_np0ns0_A0 \
+  > log/20260108_btavg3_np0ns0_A0_0to100k.log 2>&1 &
+
+
+python initialize_pcd.py --data data/dir_4d_case1_dead01.pickle
+python initialize_pcd.py --data data/dir_4d_case1_metal20.pickle
+python initialize_pcd.py --data data/dir_4d_case1_ring3.pickle
+
+python initialize_pcd.py --data data/dir_4d_case1_limited90.pickle
+python initialize_pcd.py --data data/dir_4d_case1_limited45.pickle
+python initialize_pcd.py --data data/dir_4d_case1_limited120_dual.pickle
+
+nohup python train.py -s data/dir_4d_case1_limited90.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname l90_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_l90_baseline.log 2>&1 &
+  
+nohup python train.py -s data/dir_4d_case1_limited45.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname l45_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_l45_baseline.log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1_limited120_dual.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname l120d_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_l120d_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_limited90.pickle \
+  --dirname 20260109_l90_np0ns0_A0 \
+  > log/20260109_l90_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_limited45.pickle \
+  --dirname 20260109_l45_np0ns0_A0 \
+  > log/20260109_l45_np0ns0_A0_0to100k.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_limited120_dual.pickle \
+  --dirname 20260109_l120d_np0ns0_A0 \
+  > log/20260109_l120d_np0ns0_A0_0to100k.log 2>&1 &
+
+**生成时间**: 2026-01-10 15:05 (更新)  
+**基于提交**: 探讨工业数据集实验的权重设置
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S01_004_256_60.pickle \
+  --dirname 20260110_S01_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  > log/20260110_S01_np0ns0_A0_s4like20251204.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/XCAT.pickle \
+  --dirname 20260110_XCAT_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  > log/20260110_XCAT_np0ns0_A0_s4like20251204.log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --lambda_prior 0.0 --lambda_tv 0.0 \
+  --iterations 50000 --test_iterations 10000 20000 30000 40000 50000 \
+  > log/train_physx_boosted_v9_alpha0.99.log 2>&1 & (例子，重点确认两件事情，v9alpha0.99和我们的0.99 0.01 0.01有没有区别，以及应用于hm数据集的效果）
+
+nohup python train.py -s data/100_HM.pickle \
+  --use_anchor_deformation --use_boosted \
+  --use_learnable_balance --balance_alpha_init 0.99 --balance_lr 0 \
+  --lambda_prior 0.0 --lambda_tv 0.0 \
+  --iterations 50000 --test_iterations 10000 20000 30000 40000 50000 \
+  > log/20260110_100HM_v9_0.99.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/100_HM.pickle \
+  --dirname 20260110_100HM_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint\
+  > log/20260110_100HM_np0ns0_A0_s4like20251204.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/100_HM.pickle \
+  --dirname 20260110_100HM_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  --use_anchor_deformation --use_boosted \
+  --lambda_anchor_smooth 0.01 \
+  --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  > log/20260110_100HM_np0ns0_A0_s4like20251204_anchor_smooth0.01.log 2>&1 &
+
+**S02baseline vs 001ds**
+nohup python train.py -s data/S02_005_256_60.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname S02_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_S02_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S02_005_256_60.pickle \
+  --dirname 20260110_S02_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint\
+  > log/20260110_S02_np0ns0_A0_s4like20251204.log 2>&1 &
+
+nohup python train.py -s data/S04_009_256_60.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname S04_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_S04_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S04_009_256_60.pickle \
+  --dirname 20260111_S04_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint\
+  > log/20260111_S04_np0ns0_A0_s4like20251204.log 2>&1 &
+
+nohup python train.py -s data/S08_700_256_60.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname S08_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_S08_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S08_700_256_60.pickle \
+  --dirname 20260111_S08_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint\
+  > log/20260111_S08_np0ns0_A0_s4like20251204.log 2>&1 &
+
+nohup python train.py -s data/S12_021_256_60.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname S12_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_S12_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S12_021_256_60.pickle \
+  --dirname 20260111_S12_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint\
+  > log/20260111_S12_np0ns0_A0_s4like20251204.log 2>&1 &
+
+
+**生成时间**: 2026-01-11 22:14
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case2.pickle \
+  --dirname 20260103_1620_case2_np0ns0_A0 \
+  > log/20260103_1620_case2_np0ns0_A0_0to100k.log 2>&1 &
+
+
+python tools/create_robustness_datasets.py \
+  --input data/S08_700_256_60.pickle \
+  --view_ratio 0.5
+
+python initialize_pcd.py --data data/S04_009_256_60_sparse50.pickle
+python initialize_pcd.py --data data/S08_700_256_60_sparse50.pickle
+
+nohup python train.py -s data/S04_009_256_60_sparse50.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname S04sp50_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_S04sp50_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S04_009_256_60_sparse50.pickle \
+  --dirname 20260111_S04sp50_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint\
+  > log/20260111_S04sp50_np0ns0_A0_s4like20251204.log 2>&1 &
+
+nohup python train.py -s data/S08_700_256_60_sparse50.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname S08sp50_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_S08sp50_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/S08_700_256_60_sparse50.pickle \
+  --dirname 20260111_S08sp50_np0ns0_A0_s4like20251204 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint\
+  > log/20260111_S08sp50_np0ns0_A0_s4like20251204.log 2>&1 &
+
+
+**生成时间**: 2026-01-12 03:35
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case1.pickle \
+  --view_ratio 0.334
+
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case1.pickle \
+  --view_ratio 0.667
+
+python initialize_pcd.py --data data/dir_4d_case1_sparse33.pickle
+python initialize_pcd.py --data data/dir_4d_case1_sparse66.pickle
+
+nohup python train.py -s data/dir_4d_case1_sparse33.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname sp33_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp33_baseline.log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1_sparse66.pickle \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000\
+  --save_iterations 50000 --save_checkpoint --dirname sp66_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp66_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_sparse33.pickle \
+  --dirname 20260112_sp33_np0ns0_A0 \
+  > log/20260112_sp33_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_sparse66.pickle \
+  --dirname 20260112_sp66_np0ns0_A0 \
+  > log/20260112_sp66_np0ns0_A0_0to100k.log 2>&1 &
+
+**生成时间**: 2026-01-12 17:59
+
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case1.pickle \
+  --view_ratio 0.167
+
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case2.pickle \
+  --view_ratio 0.167
+
+python initialize_pcd.py --data data/dir_4d_case1_sparse16.pickle
+python initialize_pcd.py --data data/dir_4d_case2_sparse16.pickle
+
+nohup python train.py -s data/dir_4d_case1_sparse16.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname sp16_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp16_baseline.log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case2_sparse16.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname sp16_case2_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp16_case2_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_sparse16.pickle \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 60000\
+  --save_iterations 60000 --save_checkpoint \
+  --dirname 20260112_sp16_np0ns0_A0 \
+  > log/20260112_sp16_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case2_sparse16.pickle \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 60000 \
+  --save_iterations 60000 --save_checkpoint \
+  --dirname 20260112_sp16_case2_np0ns0_A0 \
+  > log/20260112_sp16_case2_np0ns0_A0_0to100k.log 2>&1 &
+
+
+**生成时间**: 2026-01-12 18:02 (TBD)
+nohup python train.py -s data/XCAT.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname XCAT_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_XCAT_baseline.log 2>&1 &
+
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case2.pickle \
+  --view_ratio 0.200
+
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case2.pickle \
+  --view_ratio 0.500
+
+
+python initialize_pcd.py --data data/dir_4d_case2_sparse20.pickle
+python initialize_pcd.py --data data/dir_4d_case2_sparse50.pickle
+
+nohup python train.py -s data/dir_4d_case2_sparse20.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname sp20_case2_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp20_case2_baseline.log 2>&1 &
+
+
+nohup python train.py -s data/dir_4d_case2_sparse50.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname sp50_case2_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp50_case2_baseline.log 2>&1 &
+
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case2_sparse20.pickle \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 60000\
+  --save_iterations 60000 --save_checkpoint \
+  --dirname 20260112_sp20_case2_np0ns0_A0 \
+  > log/20260112_sp20_case2_np0ns0_A0_0to100k.log 2>&1 &
+
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case2_sparse50.pickle \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 60000\
+  --save_iterations 60000 --save_checkpoint \
+  --dirname 20260112_sp50_case2_np0ns0_A0 \
+  > log/20260112_sp50_case2_np0ns0_A0_0to100k.log 2>&1 &
+  
+
+**生成时间**: 2026-01-12 03:35
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case1.pickle \
+  --view_ratio 0.40
+
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case1.pickle \
+  --view_ratio 0.60
+
+python initialize_pcd.py --data data/dir_4d_case1_sparse40.pickle
+python initialize_pcd.py --data data/dir_4d_case1_sparse60.pickle
+
+nohup python train.py -s data/dir_4d_case1_sparse40.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname sp40_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp40_baseline.log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case1_sparse60.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname sp60_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp60_baseline.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_sparse40.pickle \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 60000\
+  --save_iterations 60000 --save_checkpoint \
+  --dirname 20260112_sp40_np0ns0_A0 \
+  > log/20260112_sp40_np0ns0_A0_0to100k.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case1_sparse60.pickle \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 60000\
+  --save_iterations 60000 --save_checkpoint \
+  --dirname 20260112_sp60_np0ns0_A0 \
+  > log/20260112_sp60_np0ns0_A0_0to100k.log 2>&1 &
+
+
+**生成时间**: 2026-01-13 17:25 (更新)
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case3.pickle \
+  --view_ratio 0.200
+
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case3.pickle \
+  --view_ratio 0.500
+
+
+python initialize_pcd.py --data data/dir_4d_case3_sparse20.pickle
+python initialize_pcd.py --data data/dir_4d_case3_sparse50.pickle
+
+nohup python train.py -s data/dir_4d_case3_sparse20.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname sp20_case3_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp20_case3_baseline.log 2>&1 &
+
+
+nohup python train.py -s data/dir_4d_case3_sparse50.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname sp50_case3_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp50_case3_baseline.log 2>&1 &
+
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case3_sparse20.pickle \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 60000\
+  --save_iterations 60000 --save_checkpoint \
+  --dirname 20260112_sp20_case3_np0ns0_A0 \
+  > log/20260113_sp20_case3_np0ns0_A0_0to100k.log 2>&1 &
+
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case3_sparse50.pickle \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 60000\
+  --save_iterations 60000 --save_checkpoint \
+  --dirname 20260112_sp50_case3_np0ns0_A0 \
+  > log/20260113_sp50_case3_np0ns0_A0_0to100k.log 2>&1 &
+
 **生成时间**: 2025-12-16 17:44 (更新)  
 **基于提交**: PhysX-Boosted s0/s1/s2/s3 实现
 
@@ -135,6 +880,185 @@ nohup python train.py -s data/dir_4d_case1.pickle \
 | `--s0_residual_mode` | False | s0.3: Use Φ = Φ_L + β·Φ_E formulation |
 | `--s0_beta_min` | 0.005 | s0.3: Minimum residual weight |
 | `--s0_beta_max` | 0.015 | s0.3: Maximum residual weight |
+
+---
+
+## [2026-01-02] Anchor Temporal Minimal Action (Mass-weighted)
+
+### 新增：Mass-weighted Minimal Action 时间二阶平滑
+
+目标：抑制 sparse-view 时间插值的 transport jitter，提升 PSNR/SSIM 的稳定性。
+
+核心定义：对 anchor 位移 \(\delta_j(t)\) 的二阶差分（加速度）做质量加权惩罚。
+
+其中质量 \(m_j\) 使用已有 Gaussian→Anchor KNN 绑定权重聚合：
+
+```text
+m_j = Σ_i ω_ij
+```
+
+时间二阶项（离散三点）：
+
+```text
+acc_j(t) = (δ_j(t+Δt) - 2δ_j(t) + δ_j(t-Δt))
+L_time = Σ_j m_j ||acc_j(t)||² / (Σ_j m_j + eps)
+```
+
+注意：实践中发现 `/(Δt²)` 会导致该项尺度过大（对训练主损失产生过强约束），因此这里采用“不除以 Δt²”的版本，并通过 `lambda_anchor_time` 控制整体权重。
+
+### 代码改动
+
+| 文件 | 修改 |
+|------|------|
+| `x2_gaussian/gaussian/anchor_module.py` | + `_anchor_mass` 缓存（由 `knn_weights` scatter_add 聚合）；+ `compute_anchor_time_smooth_loss()` |
+| `train.py` | fine-stage 新增 `anchor_time` loss，并按 `lambda_anchor_time` 加入 total |
+| `x2_gaussian/arguments/__init__.py` | 暴露超参：`lambda_anchor_time`, `anchor_time_delta`, `anchor_time_eps`, `anchor_time_stopgrad_neighbors` |
+| `x2_gaussian/utils/argument_utils.py` | 修复 bool 参数解析：支持 `--flag` / `--flag True` / `--flag False`，避免 `unrecognized arguments: True` |
+
+### 新增参数（默认关闭）
+
+| 参数 | 默认值 | 描述 |
+|------|--------|------|
+| `--lambda_anchor_time` | 0.0 | time loss 权重（修复尺度后建议从 1e-5~3e-5 起；更激进可到 1e-4） |
+| `--anchor_time_delta` | 0.05 | 有限差分 Δt（归一化时间） |
+| `--anchor_time_eps` | 1e-8 | 质量归一化 eps |
+| `--anchor_time_stopgrad_neighbors` | True | 是否对 t±Δt 的 forward 停梯度（更稳/省显存） |
+
+### 训练命令（对比实验：关闭 dist）
+
+```bash
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --start_checkpoint output/20260102_1620_case1_np0ns0_A0/chkpntXXXX.pth \
+  --lambda_anchor_distortion 0.0 \
+  --lambda_anchor_time 3e-4 \
+  --anchor_time_delta 0.05 \
+  --anchor_time_stopgrad_neighbors True \
+  > log/20260102_1620_case1_np0ns0_A0_time_0to100k.log 2>&1 &
+```
+
+### 修复：Time loss 尺度问题（去除 /Δt²）
+
+现象：time loss 版本出现 PSNR/SSIM 显著下降，且训练 log 中该项对 total loss 的贡献异常偏大。
+
+原因：实现中使用了 `/(dt*dt)` 导致加速度项尺度过大。
+
+修复：在 `x2_gaussian/gaussian/anchor_module.py` 的 `compute_anchor_time_smooth_loss()` 中去除 `/(dt*dt)`。
+
+建议：修复后推荐将 `--lambda_anchor_time` 从 `3e-4` 下调至 `3e-5`（或更保守 `1e-5`）再进行 ablation。
+
+---
+
+## [2026-01-02] Anchor Bounded Distortion / Quasi-Isometry Loss
+
+### 新增：Bounded Distortion（抑制折叠/拉伸）
+
+目标：对 anchor 图上的边长比例做 hinge 约束，鼓励局部 quasi-isometry，减少 fold / tear。
+
+定义：在 canonical anchor 上构建 KNN 图（k = `anchor_distortion_k`），对每条边 (i,j) 计算
+
+```text
+r_ij = ||(x_i + δ_i) - (x_j + δ_j)|| / (||x_i - x_j|| + eps)
+L_dist = mean( max(0, r_min - r_ij)^2 + max(0, r_ij - r_max)^2 )
+```
+
+其中可选 `anchor_distortion_sigma` 对边进行距离加权（默认 0.0 表示不加权）。
+
+### 代码改动
+
+| 文件 | 修改 |
+|------|------|
+| `x2_gaussian/gaussian/anchor_module.py` | + 预计算 anchor KNN 图与 canonical 边长缓存；+ `compute_anchor_distortion_loss()` |
+| `train.py` | fine-stage 新增 `anchor_distortion` loss，并按 `lambda_anchor_distortion` 加入 total |
+| `x2_gaussian/arguments/__init__.py` | 暴露超参：`lambda_anchor_distortion`, `anchor_distortion_k`, `anchor_distortion_r_min`, `anchor_distortion_r_max`, `anchor_distortion_eps`, `anchor_distortion_sigma` |
+
+### 训练命令（case1 baseline + dist loss）
+
+```bash
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --dirname 20260102_1620_case1_np0ns0_A0_dist \
+  --lambda_anchor_distortion 5e-4 \
+  --anchor_distortion_k 8 \
+  --anchor_distortion_r_min 0.6 \
+  --anchor_distortion_r_max 1.6 \
+  --anchor_distortion_eps 1e-6 \
+  --anchor_distortion_sigma 0.0 \
+  > log/20260102_1620_case1_np0ns0_A0_dist_0to100k.log 2>&1 &
+```
+
+### 训练命令（case2 baseline + dist loss）
+
+```bash
+nohup python train.py \
+  --config output/20251230_032322_np0ns0_A0_cfg_args.yml \
+  --dirname 20260103_case2_np0ns0_A0_dist \
+  --lambda_anchor_distortion 5e-4 \
+  --anchor_distortion_k 8 \
+  --anchor_distortion_r_min 0.6 \
+  --anchor_distortion_r_max 1.6 \
+  --anchor_distortion_eps 1e-6 \
+  --anchor_distortion_sigma 0.0 \
+  > log/20260103_case2_np0ns0_A0_dist_0to100k.log 2>&1 &
+```
+
+---
+
+## [2026-01-03] 下载 DIR case3/case4/case5 数据（hf-mirror） + case3 直接开跑命令
+
+### 下载（建议大陆镜像 hf-mirror）
+
+先下载 case3：
+
+```bash
+mkdir -p data && \
+wget -O data/dir_4d_case3.pickle "https://hf-mirror.com/datasets/vortex778/X2GS/resolve/main/DIR/dir_4d_case3.pickle?download=true" && \
+wget -O data/init_dir_4d_case3.npy "https://hf-mirror.com/datasets/vortex778/X2GS/resolve/main/DIR/init_dir_4d_case3.npy?download=true"
+```
+
+再下载 case4/case5：
+
+```bash
+wget -O data/dir_4d_case4.pickle "https://hf-mirror.com/datasets/vortex778/X2GS/resolve/main/DIR/dir_4d_case4.pickle?download=true" && \
+wget -O data/init_dir_4d_case4.npy "https://hf-mirror.com/datasets/vortex778/X2GS/resolve/main/DIR/init_dir_4d_case4.npy?download=true" && \
+wget -O data/dir_4d_case5.pickle "https://hf-mirror.com/datasets/vortex778/X2GS/resolve/main/DIR/dir_4d_case5.pickle?download=true" && \
+wget -O data/init_dir_4d_case5.npy "https://hf-mirror.com/datasets/vortex778/X2GS/resolve/main/DIR/init_dir_4d_case5.npy?download=true"
+```
+
+### 说明：init 文件无需额外参数
+
+当 `--source_path data/dir_4d_case3.pickle` 时，初始化逻辑会自动寻找同目录的 `data/init_dir_4d_case3.npy`（见 `x2_gaussian/gaussian/initialize.py`）。
+
+
+### 实测：aria2c 更快更稳（推荐）
+
+case3（pickle）：
+
+```bash
+aria2c -c -x 16 -s 16 -k 1M --max-tries=0 --retry-wait=5 --timeout=60   -o dir_4d_case3.pickle   -d /root/autodl-tmp/4dctgs/x2-gaussian-main-origin/data   "https://hf-mirror.com/datasets/vortex778/X2GS/resolve/main/DIR/dir_4d_case3.pickle?download=true"
+```
+
+case4（npy，建议低并发避免 TLS handshake 抖动）：
+
+```bash
+aria2c -c -x 4 -s 4 -k 1M --max-tries=0 --retry-wait=5 --timeout=60   -o init_dir_4d_case4.npy   -d /root/autodl-tmp/4dctgs/x2-gaussian-main-origin/data   "https://hf-mirror.com/datasets/vortex778/X2GS/resolve/main/DIR/init_dir_4d_case4.npy?download=true"
+```
+
+case5（pickle）：
+
+```bash
+aria2c -c -x 16 -s 16 -k 1M --max-tries=0 --retry-wait=5 --timeout=60   -o dir_4d_case5.pickle   -d /root/autodl-tmp/4dctgs/x2-gaussian-main-origin/data   "https://hf-mirror.com/datasets/vortex778/X2GS/resolve/main/DIR/dir_4d_case5.pickle?download=true"
+```
+
+### case3 nohup（基于 case1 A0 baseline 的 config，直接覆盖 source_path）
+
+```bash
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case3.pickle \
+  --dirname 20260103_1620_case3_np0ns0_A0 \
+  > log/20260103_1620_case3_np0ns0_A0_0to100k.log 2>&1 &
+```
 
 ---
 
@@ -1819,7 +2743,7 @@ python tools/create_robustness_datasets.py \
 
 ```bash
 python tools/compare_metrics.py \
-  --model_path output/xxx/point_cloud/iteration_5000 \
+  --model_path output/20260104_xcat_np0ns0_A0/point_cloud/iteration_50000 \
   --data_path data/XCAT.pickle
 ```
 
@@ -3614,6 +4538,22 @@ python tools/create_limited_angle.py \
   --input data/dir_4d_case1.pickle \
   --angle_range 90 \
   --mode dual
+  
+# 仅保留 90° 范围
+python tools/create_limited_angle.py \
+  --input data/dir_4d_case1.pickle \
+  --angle_range 90
+  
+# 仅保留 45° 范围
+python tools/create_limited_angle.py \
+  --input data/dir_4d_case1.pickle \
+  --angle_range 45
+
+# 保留两个 60° 对立扇区
+python tools/create_limited_angle.py \
+  --input data/dir_4d_case1.pickle \
+  --angle_range 60 \
+  --mode dual
 ```
 
 ### 4. 金属伪影/条纹 (`tools/add_metal_artifacts.py`)
@@ -3633,6 +4573,12 @@ python tools/add_metal_artifacts.py \
   --input data/dir_4d_case1.pickle \
   --artifact_type stripe \
   --stripe_ratio 0.05
+
+# 坏死像素 (1% 像素坏死)
+python tools/add_metal_artifacts.py \
+  --input data/dir_4d_case1.pickle \
+  --artifact_type dead \
+  --dead_ratio 0.01
 
 # 金属伪影
 python tools/add_metal_artifacts.py \
@@ -4484,6 +5430,882 @@ nohup python train.py -s data/dir_4d_case1.pickle \
 - 以 `k=0.025` 分支，只在 `ds=0.86~0.90` 附近探索（避免 `ds=0.92`）。
 
 ---
+
+#### 2.8 [2025-12-24] S4 固定融合：显式控制 (wA, ds_weight, k) 并移除对 α 的依赖
+
+背景：跨数据集测试中发现，S4 系列在后期可能出现 NaN 或者 3D 指标突然掉崖。排查后发现核心风险是 ds 的计算仍被 `(1-α)` 隐式 gate：即使命令行设置了 `--balance_lr 0`，只要进入 `use_learnable_balance` 分支，`ds_combined` 的幅度仍然由 α 决定；并且在实际运行中还观察到日志可能仍打印 `Added learnable balance parameter to optimizer (lr=0.001)`，导致 α 实际仍可能在被优化。
+
+为确保 S4 实验中的 `ds_weight` 完全由实验参数显式控制，新增：
+
+- `--s4_ds_hex_weight`：直接指定 `ds_weight`，按 `ds = ds_weight * ds_hex` 计算。
+
+并在 `anchor_module.py` 中实现：当 `s4_dx_anchor_weight / s4_ds_hex_weight / s4_dr_hex_weight` 任一被设置（>=0）时，启用 **S4 (independent fixed fusion)**，不再依赖 `use_learnable_balance`/α。
+
+##### 2.8.1 重新跑 3 个跨数据集实验（k=0.0175, ds_weight=0.92）
+
+```bash
+# 4dlung_case4
+nohup python train.py -s data/4dlung_case4.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight 0.92 \
+  --s4_dr_hex_weight 0.0175 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4fix_wA1_k00175_ds092_4dlung_case4_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_wA1_k00175_ds092_4dlung_case4_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# spare_mc_case1
+nohup python train.py -s data/spare_mc_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight 0.92 \
+  --s4_dr_hex_weight 0.0175 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4fix_wA1_k00175_ds092_spare_mc_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_wA1_k00175_ds092_spare_mc_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# dir_4d_case2
+nohup python train.py -s data/dir_4d_case2.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight 0.92 \
+  --s4_dr_hex_weight 0.0175 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4fix_wA1_k00175_ds092_dir_4d_case2_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_wA1_k00175_ds092_dir_4d_case2_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+##### 2.8.2 [2025-12-24] dir_4d_case1：s4fix 固定融合 8 组合 rerun（pending）
+
+说明：本轮用于替代旧的 `s4_combo_*`（learnable balance / α 依赖）组合实验。通过显式设置 `--s4_dx_anchor_weight/--s4_ds_hex_weight/--s4_dr_hex_weight` 启用 fixed fusion，并确保 `ds_weight` 不再受 `(1-α)` gate 影响。
+
+```bash
+# 1) k=0.0150, ds=0.90
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight 0.90 \
+  --s4_dr_hex_weight 0.0150 \
+  --lambda_dssim 0.25 --lambda_phys 0.1 --lambda_anchor_smooth 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4fix_wA1_k00150_ds090_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_wA1_k00150_ds090_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# 2) k=0.0160, ds=0.90
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight 0.90 \
+  --s4_dr_hex_weight 0.0160 \
+  --lambda_dssim 0.25 --lambda_phys 0.1 --lambda_anchor_smooth 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4fix_wA1_k00160_ds090_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_wA1_k00160_ds090_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# 3) k=0.0175, ds=0.88
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight 0.88 \
+  --s4_dr_hex_weight 0.0175 \
+  --lambda_dssim 0.25 --lambda_phys 0.1 --lambda_anchor_smooth 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4fix_wA1_k00175_ds088_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_wA1_k00175_ds088_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# 4) k=0.0175, ds=0.92
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight 0.92 \
+  --s4_dr_hex_weight 0.0175 \
+  --lambda_dssim 0.25 --lambda_phys 0.1 --lambda_anchor_smooth 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4fix_wA1_k00175_ds092_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_wA1_k00175_ds092_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# 5) k=0.0185, ds=0.90
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight 0.90 \
+  --s4_dr_hex_weight 0.0185 \
+  --lambda_dssim 0.25 --lambda_phys 0.1 --lambda_anchor_smooth 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4fix_wA1_k00185_ds090_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_wA1_k00185_ds090_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# 6) k=0.0190, ds=0.90
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight 0.90 \
+  --s4_dr_hex_weight 0.0190 \
+  --lambda_dssim 0.25 --lambda_phys 0.1 --lambda_anchor_smooth 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4fix_wA1_k00190_ds090_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_wA1_k00190_ds090_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# 7) k=0.0250, ds=0.88
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight 0.88 \
+  --s4_dr_hex_weight 0.0250 \
+  --lambda_dssim 0.25 --lambda_phys 0.1 --lambda_anchor_smooth 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4fix_wA1_k00250_ds088_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_wA1_k00250_ds088_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# 8) k=0.0250, ds=0.92
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight 0.92 \
+  --s4_dr_hex_weight 0.0250 \
+  --lambda_dssim 0.25 --lambda_phys 0.1 --lambda_anchor_smooth 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4fix_wA1_k00250_ds092_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_wA1_k00250_ds092_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+本次启动 log（2025-12-24）：
+
+| k | ds_weight | log |
+|---:|---:|---|
+| 0.0150 | 0.90 | `log/s4fix_wA1_k00150_ds090_case1_20251224_123534.log` |
+| 0.0160 | 0.90 | `log/s4fix_wA1_k00160_ds090_case1_20251224_123533.log` |
+| 0.0175 | 0.88 | `log/s4fix_wA1_k00175_ds088_case1_20251224_123534.log` |
+| 0.0175 | 0.92 | `log/s4fix_wA1_k00175_ds092_case1_20251224_123533.log` |
+| 0.0185 | 0.90 | `log/s4fix_wA1_k00185_ds090_case1_20251224_123534.log` |
+| 0.0190 | 0.90 | `log/s4fix_wA1_k00190_ds090_case1_20251224_123534.log` |
+| 0.0250 | 0.88 | `log/s4fix_wA1_k00250_ds088_case1_20251224_123534.log` |
+| 0.0250 | 0.92 | `log/s4fix_wA1_k00250_ds092_case1_20251224_123534.log` |
+
+本轮结果（[ITER 50000]，按 PSNR3D_mean 排序）：
+
+| k (`s4_dr_hex_weight`) | ds_weight (`s4_ds_hex_weight`) | output | PSNR3D_mean | SSIM3D_mean | PSNR2D_mean | SSIM2D_mean |
+|---:|---:|---|---:|---:|---:|---:|
+| 0.0175 | 0.88 | `output/5dac34f6-4` | 45.402 | 0.981 | 44.045 | 0.990 |
+| 0.0150 | 0.90 | `output/7dd76797-b` | 45.354 | 0.981 | 44.212 | 0.990 |
+| 0.0250 | 0.92 | `output/7735813c-2` | 45.218 | 0.981 | 44.225 | 0.990 |
+| 0.0190 | 0.90 | `output/a30734dc-f` | 45.135 | 0.980 | 43.893 | 0.990 |
+| 0.0160 | 0.90 | `output/40ec6c31-e` | 44.920 | 0.979 | 43.663 | 0.990 |
+| 0.0250 | 0.88 | `output/64a04b6e-b` | 44.920 | 0.979 | 43.663 | 0.990 |
+| 0.0185 | 0.90 | `output/99cbb0bf-a` | 44.856 | 0.979 | 43.571 | 0.990 |
+| 0.0175 | 0.92 | `output/53b0ffb4-0` | 44.644 | 0.978 | 43.182 | 0.989 |
+
+对比结论（vs 未修复版本 `s4_next2_*` 8 组合）：
+
+- 本轮（s4fix）最优：`k=0.0175, ds=0.88`，PSNR3D_mean=45.402。
+- 旧版（s4_next2）最优：`k=0.0175, ds=0.92`，PSNR3D_mean=45.439。
+- 最优点从 `ds=0.92` 转移到 `ds=0.88`；峰值差异约 0.037（很小）。
+- 重要：本轮 8 个均稳定跑满 50k，未出现旧版所观测到的后期 NaN/掉崖风险。
+
+下一步（建议 8 个组合，s4fix 固定融合，局部精修）：
+
+说明：将 8 个点分成两条线，各 4 个。
+
+- 线 A（围绕本轮最优 `k=0.0175, ds=0.88` 做局部精修）：
+  - `k=0.0165, ds=0.88`
+  - `k=0.0185, ds=0.88`
+  - `k=0.0175, ds=0.87`
+  - `k=0.0175, ds=0.89`
+- 线 B（沿 `k=0.025, ds≈0.92` 的高分支做局部精修）：
+  - `k=0.0240, ds=0.92`
+  - `k=0.0260, ds=0.92`
+  - `k=0.0250, ds=0.91`
+  - `k=0.0250, ds=0.93`
+
+下一步命令模板（case1，wA=1.0）：
+
+```bash
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight <DS_WEIGHT> \
+  --s4_dr_hex_weight <K> \
+  --lambda_dssim 0.25 --lambda_phys 0.1 --lambda_anchor_smooth 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --dirname s4fix_wA1_k${K_STR}_ds${DS_STR}_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_wA1_k${K_STR}_ds${DS_STR}_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### [2025-12-25] dir_4d_case1：s4fix 围绕 k=0.0175, ds=0.88 的 coarse sweep（debug 全开）
+
+说明：目标是“颗粒度更大”的下一轮扫点，在保证不重复既有 s4fix 8 组合以及已启动的 `k=0.0175, ds=0.87` 前提下，扩大 k/ds 扰动范围以获得更明显差异。所有命令均开启 `--debug` 用于 NaN/Inf 首发定位。
+
+已启动（debug 复现，观察稳定性）：
+
+- `k=0.0175, ds=0.87`：`log/s4fix_wA1_k00175_ds087_case1_20251225_142640.log`
+
+coarse sweep（8 组，debug 全开）：
+
+- 线 A（固定 ds=0.88，扫 k）：
+  - `k=0.0125, ds=0.88`
+  - `k=0.0150, ds=0.88`
+  - `k=0.0200, ds=0.88`
+  - `k=0.0225, ds=0.88`
+- 线 B（固定 k=0.0175，扫 ds）：
+  - `k=0.0175, ds=0.82`
+  - `k=0.0175, ds=0.84`
+  - `k=0.0175, ds=0.94`
+  - `k=0.0175, ds=0.96`
+
+```bash
+# A1) k=0.0125, ds=0.88 (debug)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight 0.88 \
+  --s4_dr_hex_weight 0.0125 \
+  --lambda_dssim 0.25 --lambda_phys 0.1 --lambda_anchor_smooth 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --debug \
+  --dirname s4fix_dbg_wA1_k00125_ds088_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_dbg_wA1_k00125_ds088_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# A2) k=0.0150, ds=0.88 (debug)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight 0.88 \
+  --s4_dr_hex_weight 0.0150 \
+  --lambda_dssim 0.25 --lambda_phys 0.1 --lambda_anchor_smooth 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --debug \
+  --dirname s4fix_dbg_wA1_k00150_ds088_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_dbg_wA1_k00150_ds088_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# A3) k=0.0200, ds=0.88 (debug)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight 0.88 \
+  --s4_dr_hex_weight 0.0200 \
+  --lambda_dssim 0.25 --lambda_phys 0.1 --lambda_anchor_smooth 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --debug \
+  --dirname s4fix_dbg_wA1_k00200_ds088_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_dbg_wA1_k00200_ds088_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# A4) k=0.0225, ds=0.88 (debug)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight 0.88 \
+  --s4_dr_hex_weight 0.0225 \
+  --lambda_dssim 0.25 --lambda_phys 0.1 --lambda_anchor_smooth 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --debug \
+  --dirname s4fix_dbg_wA1_k00225_ds088_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_dbg_wA1_k00225_ds088_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# B1) k=0.0175, ds=0.82 (debug)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight 0.82 \
+  --s4_dr_hex_weight 0.0175 \
+  --lambda_dssim 0.25 --lambda_phys 0.1 --lambda_anchor_smooth 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --debug \
+  --dirname s4fix_dbg_wA1_k00175_ds082_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_dbg_wA1_k00175_ds082_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# B2) k=0.0175, ds=0.84 (debug)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight 0.84 \
+  --s4_dr_hex_weight 0.0175 \
+  --lambda_dssim 0.25 --lambda_phys 0.1 --lambda_anchor_smooth 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --debug \
+  --dirname s4fix_dbg_wA1_k00175_ds084_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_dbg_wA1_k00175_ds084_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# B3) k=0.0175, ds=0.94 (debug)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight 0.94 \
+  --s4_dr_hex_weight 0.0175 \
+  --lambda_dssim 0.25 --lambda_phys 0.1 --lambda_anchor_smooth 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --debug \
+  --dirname s4fix_dbg_wA1_k00175_ds094_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_dbg_wA1_k00175_ds094_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+
+# B4) k=0.0175, ds=0.96 (debug)
+nohup python train.py -s data/dir_4d_case1.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 1.0 \
+  --s4_ds_hex_weight 0.96 \
+  --s4_dr_hex_weight 0.0175 \
+  --lambda_dssim 0.25 --lambda_phys 0.1 --lambda_anchor_smooth 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 50000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 \
+  --save_iterations 50000 --save_checkpoint \
+  --debug \
+  --dirname s4fix_dbg_wA1_k00175_ds096_case1_$(date +%Y%m%d_%H%M%S) \
+  > log/s4fix_dbg_wA1_k00175_ds096_case1_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+### [2025-12-26/27] dir_4d_case1：s6(TRGF) 诊断与修复（性能损失定位 + ds 权重局部扫点）
+
+说明：围绕此前不稳定的 `k=0.0200, ds≈0.90`，引入 s6(TRGF) 的可控限幅（pos/scale/rot），并用 6 组对照定位“早期性能损失”与“后期掉崖/NaN”的权衡。
+
+#### 6 组对照（k=0.0200, ds=0.90, wA=1.0）
+
+- A0 (baseline/s4fix)：`log/s6diag_A0_base_s4fix_dbg_wA1_k00200_ds090_case1_20251226_155642.log`
+  - 20k: psnr3d 44.206, psnr2d 43.049
+  - 50k: psnr3d 45.339, psnr2d 44.379
+- A1 (TRGF-tight)：`log/s6diag_A1_trgf_fixed_tight_dbg_ds090_20251226_155645.log`
+  - 20k: psnr3d 43.696, psnr2d 41.183
+  - 50k: psnr3d 44.874, psnr2d 42.153
+- A2 (TRGF-relaxSR)：`log/s6diag_A2_trgf_fixed_relaxSR_dbg_ds090_20251226_155648.log`
+  - 20k: psnr3d 44.113, psnr2d 42.917
+  - 50k: psnr3d 45.230, psnr2d 44.123
+- B1 (late-on + schedule, full)：`log/s6diag_B1_trgf_lateOn_sched_dbg_ds090_20251226_155653.log`
+  - 20k: psnr3d 44.227, psnr2d 42.988
+  - 50k: psnr3d 43.277, psnr2d 34.238
+- B2 (late-on + schedule, SR-only)：`log/s6diag_B2_trgf_sched_SRonly_dbg_ds090_20251226_155657.log`
+  - 20k: psnr3d 44.248, psnr2d 43.171
+  - 50k: psnr3d 42.535, psnr2d 33.073
+- B3 (late-on + schedule, DX-only)：`log/s6diag_B3_trgf_sched_DXonly_dbg_ds090_20251226_155702.log`
+  - 20k: psnr3d 44.113, psnr2d 42.917
+  - 50k: psnr3d 45.230, psnr2d 44.123
+
+结论（本轮）：
+
+- A1 的性能损失主要体现在 2D 指标（20k/50k 均明显偏低），说明 TRGF 过紧会带来欠拟合。
+- A2 将 tau 放松后，性能基本回到 baseline 水平（50k: psnr2d 44.123 vs 44.379），且全程稳定。
+- B1/B2 在 30k 后出现 2D 指标显著退化（psnr2d 39.540/39.995 → 36.759/36.103 → 34.238/33.073），表现为“开启/调度 TRGF 的副作用”。
+- B3（只对 dx schedule）未出现上述 2D 退化，最终指标与 A2 接近。
+
+#### A2 版本：ds 权重局部扫点（k=0.0200，TRGF-relaxSR）
+
+说明：固定 TRGF-relaxSR 配置，扫 `ds_hex_weight∈{0.88,0.89,0.91,0.92}`（额外跑的点用于局部最优确认）。
+
+- ds=0.88：`log/s6diag_A2_trgf_fixed_relaxSR_dbg_ds088_20251226_213116.log`
+  - 20k: psnr3d 44.213, psnr2d 43.070
+  - 50k: psnr3d 45.357, psnr2d 44.071
+- ds=0.89：`log/s6diag_A2_trgf_fixed_relaxSR_dbg_ds089_20251226_213219.log`
+  - 20k: psnr3d 44.139, psnr2d 42.904
+  - 50k: psnr3d 45.315, psnr2d 44.038
+- ds=0.91：`log/s6diag_A2_trgf_fixed_relaxSR_dbg_ds091_20251226_213243.log`
+  - 20k: psnr3d 44.090, psnr2d 42.924
+  - 50k: psnr3d 45.266, psnr2d 44.169
+- ds=0.92：`log/s6diag_A2_trgf_fixed_relaxSR_dbg_ds092_20251226_213150.log`
+  - 20k: psnr3d 44.170, psnr2d 42.909
+  - 50k: psnr3d 45.337, psnr2d 44.125
+
+结论（局部扫点）：
+
+- 在 A2(TRGF-relaxSR) 下，`ds=0.91` 给出本轮最高的 50k 2D 指标（psnr2d 44.169）。
+- `ds=0.88~0.92` 整体差异很小（44.038~44.169），说明 TRGF-relaxSR 能把训练稳定性与性能拉到较鲁棒的区间。
+
+#### [2025-12-27] dir_4d_case1：wA=0.99, k=0.0100, ds=1.0（A0 baseline vs A2 TRGF-relaxSR）
+
+- A0 (baseline/s4fix)：`log/s6diag_A0_base_s4fix_dbg_wA099_k00100_ds100_case1_20251227_115654.log`
+  - 5k:  psnr3d 39.495, psnr2d 38.791
+  - 15k: psnr3d 44.000, psnr2d 43.156
+  - 20k: psnr3d 44.310, psnr2d 43.029
+  - 30k: psnr3d 45.249, psnr2d 44.085
+  - 40k: psnr3d 45.265, psnr2d 44.302
+  - 50k: psnr3d 45.418, psnr2d 44.506
+- A2 (TRGF-relaxSR)：`log/s6diag_A2_trgf_fixed_relaxSR_dbg_wA099_k00100_ds100_case1_20251227_115654.log`
+  - 5k:  psnr3d 39.495, psnr2d 38.792
+  - 15k: psnr3d 43.679, psnr2d 42.920
+  - 20k: psnr3d 44.164, psnr2d 42.989
+  - 30k: psnr3d 45.078, psnr2d 43.854
+  - 40k: psnr3d 45.322, psnr2d 44.061
+  - 50k: psnr3d 45.496, psnr2d 44.401
+
+结论：
+
+- A2 相比 A0：50k 的 psnr3d 略高（45.496 vs 45.418），psnr2d 略低（44.401 vs 44.506），整体非常接近。
+
+#### [2025-12-27] dir_4d_case2：复刻 ds=0.90 的 A2(TRGF-relaxSR) 配置（case2）
+
+- A2 (TRGF-relaxSR, wA=1.0, k=0.0200, ds=0.90)：`log/s6diag_A2_trgf_fixed_relaxSR_dbg_wA1_k00200_ds090_case2_20251227_115654.log`
+  - 5k:  psnr3d 32.205, psnr2d 37.106
+  - 15k: psnr3d 34.276, psnr2d 42.332
+  - 20k: psnr3d 35.115, psnr2d 42.538
+  - 30k: psnr3d 35.295, psnr2d 42.901
+  - 40k: psnr3d 35.486, psnr2d 43.125
+  - 50k: psnr3d 35.670, psnr2d 43.158
+
+#### [2025-12-27] 新启动 nohup（待跑完补结果）
+
+- case2 A0 (baseline/s4fix, wA=0.99, k=0.0100, ds=1.0)：`log/s6diag_A0_base_s4fix_dbg_wA099_k00100_ds100_case2_20251227_201237.log`
+- case2 A2 (TRGF-relaxSR, wA=0.99, k=0.0100, ds=1.0)：`log/s6diag_A2_trgf_fixed_relaxSR_dbg_wA099_k00100_ds100_case2_20251227_201237.log`
+- case1 A2 (TRGF-relaxSR, HexPlane=0 / pure anchor via V5 fixed balance α=1.0)：`log/s6diag_A2_trgf_fixed_relaxSR_dbg_hex0_alpha1_case1_20251227_201237.log`
+
+#### [2025-12-28] dir_4d_case2：从 50k checkpoint 续训到 100k（每 10k 测一次）
+
+目标：对 case2 的 A0/A2（wA=0.99, k=0.0100, ds=1.0）做 50k → 100k 的续训，并在 60/70/80/90/100k 评测。
+
+续训参数要点：
+
+- 使用 `--start_checkpoint output/<id>/ckpt/chkpnt50000.pth`
+- 设 `--iterations 100000`
+- 设 `--test_iterations 60000 70000 80000 90000 100000`
+- 设 `--save_iterations 100000 --save_checkpoint`
+- 设 `--model_path` 指向原来的 output 目录（继续写入同一目录）
+
+工程修复（resume 必需）：
+
+- 修复从 checkpoint 恢复时 `AnchorDeformationNet` 的 `knn_indices/knn_weights` 因高斯数变化导致的 shape mismatch。
+  - 实现：在 `GaussianModel.restore()` 中过滤掉 shape 不匹配的 KNN buffer，并在加载后对当前 `xyz` 重新 `update_knn_binding()`。
+
+已启动：
+bash -lc 'TS=$(date +%Y%m%d_%H%M%S)
+nohup python train.py -s data/dir_4d_case2.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 0.99 --s4_ds_hex_weight 1.0 --s4_dr_hex_weight 0.01 \
+  --s6_trust_region --s6_tau_pos 0.02 --s6_tau_scale 0.25 --s6_tau_rot 0.25 --s6_trust_region_log --s6_trust_region_log_interval 200 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 100000 \
+  --test_iterations 60000 70000 80000 90000 100000 \
+  --save_iterations 100000 --save_checkpoint \
+  --start_checkpoint output/2ded576b-2/ckpt/chkpnt50000.pth \
+  --model_path ./output/2ded576b-2 \
+  --dirname s6diag_A2_trgf_fixed_relaxSR_dbg_wA099_k00100_ds100_case2_resume100k_${TS} \
+  > log/s6diag_A2_trgf_fixed_relaxSR_dbg_wA099_k00100_ds100_case2_resume100k_${TS}.log 2>&1 &
+
+
+TS=$(date +%Y%m%d_%H%M%S)
+LOG=log/s6diag_A0_base_s4fix_dbg_wA099_k00100_ds100_case2_resume100k_${TS}.log
+nohup python train.py -s data/dir_4d_case2.pickle \
+  --use_anchor_deformation --use_boosted \
+  --s4_dx_anchor_weight 0.99 --s4_ds_hex_weight 1.0 --s4_dr_hex_weight 0.01 \
+  --lambda_balance 0.0 --lambda_prior 0.0 --lambda_tv 0.0 \
+  --mask_ratio 0.0 \
+  --coarse_iter 5000 --iterations 100000 \
+  --test_iterations 60000 70000 80000 90000 100000 \
+  --save_iterations 100000 --save_checkpoint \
+  --start_checkpoint output/b6fdb07b-5/ckpt/chkpnt50000.pth \
+  --model_path ./output/b6fdb07b-5 \
+  --dirname s6diag_A0_base_s4fix_dbg_wA099_k00100_ds100_case2_resume100k_${TS} \
+  > "$LOG" 2>&1 &
+
+  
+- case2 A2 (TRGF-relaxSR) resume100k：`log/s6diag_A2_trgf_fixed_relaxSR_dbg_wA099_k00100_ds100_case2_resume100k_20251228_161150.log`
+- case2 A0 (baseline/s4fix) resume100k：`log/s6diag_A0_base_s4fix_dbg_wA099_k00100_ds100_case2_resume100k_20251228_161516.log`
+  - 注：首次启动的 A0 resume 日志文件被删除（进程 stdout/stderr 仍指向 deleted inode），因此停止旧进程并重新启动以保证可追踪。
+
+续训评测结果（从日志提取；注意：两条日志中未找到 60k 的 `Evaluating` 行，只有 70k 起）：
+
+- case2 A0 resume100k：
+  - 70k：psnr3d=36.017, ssim3d=0.943, psnr2d=43.316, ssim2d=0.990
+  - 80k：psnr3d=36.536, ssim3d=0.946, psnr2d=43.951, ssim2d=0.991
+  - 90k：psnr3d=36.142, ssim3d=0.945, psnr2d=43.681, ssim2d=0.991
+  - 100k：psnr3d=36.384, ssim3d=0.947, psnr2d=43.989, ssim2d=0.991
+- case2 A2 (TRGF-relaxSR) resume100k：
+  - 70k：psnr3d=36.023, ssim3d=0.942, psnr2d=43.603, ssim2d=0.991
+  - 80k：psnr3d=36.105, ssim3d=0.943, psnr2d=43.790, ssim2d=0.991
+  - 90k：psnr3d=36.130, ssim3d=0.943, psnr2d=43.764, ssim2d=0.991
+  - 100k：psnr3d=36.185, ssim3d=0.943, psnr2d=44.026, ssim2d=0.991
+
+对比结论（case2, 100k）：A0 的 3D 指标略优（36.384 vs 36.185），A2 的 2D PSNR 略优（44.026 vs 43.989）。
+
+另：A2(case2) TRGF τpos 扫描（从 0 开始跑 50k，用于观察点数/性能变化）：
+
+- A2-TRGF τpos=0.03：output=`output/14ef713c-t`，pid=19086
+  - cfg：`output/14ef713c-t_cfg_args.yml`（基于 `output/2ded576b-2/cfg_args.yml`，仅覆盖 `model_path/dirname/iterations/test_iterations/save_iterations/checkpoint_iterations/start_checkpoint/s6_tau_pos`）
+  - log：`log/s6diag_A2_trgf_relaxSR_taupos003_case2_20251228_164359.log`
+- A2-TRGF τpos=0.04：output=`output/16169395-t`，pid=19087
+  - cfg：`output/16169395-t_cfg_args.yml`
+  - log：`log/s6diag_A2_trgf_relaxSR_taupos004_case2_20251228_164359.log`
+
+τpos 扫描评测结果（从日志提取；与 baseline τpos=0.02 的历史日志对齐比较）：
+
+- baseline A2 (τpos=0.02)：`log/s6diag_A2_trgf_fixed_relaxSR_dbg_wA099_k00100_ds100_case2_20251227_201237.log`
+  - 5k：psnr3d=32.202, ssim3d=0.895, psnr2d=37.100, ssim2d=0.983
+  - 20k：psnr3d=35.015, ssim3d=0.928, psnr2d=42.519, ssim2d=0.989
+  - 30k：psnr3d=35.299, ssim3d=0.934, psnr2d=43.001, ssim2d=0.989
+  - 40k：psnr3d=35.617, ssim3d=0.937, psnr2d=43.193, ssim2d=0.990
+  - 50k：psnr3d=35.796, ssim3d=0.939, psnr2d=43.290, ssim2d=0.990
+- τpos=0.03：`log/s6diag_A2_trgf_relaxSR_taupos003_case2_20251228_164359.log`
+  - 5k：psnr3d=32.206, ssim3d=0.895, psnr2d=37.107, ssim2d=0.983
+  - 20k：psnr3d=35.000, ssim3d=0.929, psnr2d=42.524, ssim2d=0.989
+  - 30k：psnr3d=35.296, ssim3d=0.933, psnr2d=42.912, ssim2d=0.989
+  - 40k：psnr3d=35.578, ssim3d=0.936, psnr2d=43.193, ssim2d=0.990
+  - 50k：psnr3d=35.765, ssim3d=0.938, psnr2d=43.416, ssim2d=0.990
+- τpos=0.04：`log/s6diag_A2_trgf_relaxSR_taupos004_case2_20251228_164359.log`
+  - 5k：psnr3d=32.202, ssim3d=0.895, psnr2d=37.100, ssim2d=0.983
+  - 20k：psnr3d=34.774, ssim3d=0.927, psnr2d=42.602, ssim2d=0.989
+  - 30k：psnr3d=35.088, ssim3d=0.932, psnr2d=43.110, ssim2d=0.989
+  - 40k：psnr3d=35.226, ssim3d=0.935, psnr2d=43.249, ssim2d=0.990
+  - 50k：psnr3d=35.464, ssim3d=0.937, psnr2d=43.297, ssim2d=0.990
+
+#### [2025-12-28] s7：case2 A0 baseline 上做 per-anchor wA（per-region transport gain）
+
+思路：将全局 `wA`（S4 的 dx 融合权重）扩展为 per-anchor 的 `wA_i(t)`，由 Anchor Transformer 的特征预测，并通过 Gaussian→Anchor 的 KNN skinning 权重插值成 per-Gaussian 的 `wA(x,t)`：
+
+- 预测：`wA_i = clamp(wA_base + ΔwA_i, 0, 1)`，`ΔwA_i = Δ_max * tanh(MLP(f_i))`
+- 插值：`wA(x,t) = Σ_k w_k(x) * wA_{a_k}(t)`
+- 正则：可选的 anchor-graph spatial smoothness 与 temporal smoothness（对应 loss 会加到 total）
+
+case2 基准：保持 `wA_base=0.99, k=0.01, ds=1.0`，只开启 s7 以允许局部偏离。
+
+已启动（从 0 开始跑 50k；test @ 5/15/20/30/40/50k）：
+
+- E1_free：Δ_max=0.01, λ_graph=0, λ_temp=0
+  - output=`output/73cefa60-s7`, pid=8663
+  - cfg=`output/73cefa60-s7_cfg_args.yml`
+  - log=`log/s7_A0_case2_E1_free_wA099_k001_ds100_20251228_221652.log`
+- E2_graph：Δ_max=0.01, λ_graph=0.01, λ_temp=0
+  - output=`output/927b694e-s7`, pid=8664
+  - cfg=`output/927b694e-s7_cfg_args.yml`
+  - log=`log/s7_A0_case2_E2_graph_wA099_k001_ds100_20251228_221652.log`
+- E3_graph_temp：Δ_max=0.01, λ_graph=0.01, λ_temp=0.01
+  - output=`output/92d44e73-s7`, pid=8666
+  - cfg=`output/92d44e73-s7_cfg_args.yml`
+  - log=`log/s7_A0_case2_E3_graph_temp_wA099_k001_ds100_20251228_221652.log`
+- E4_strong：Δ_max=0.02, λ_graph=0.01, λ_temp=0.01
+  - output=`output/526aa0b9-s7`, pid=8668
+  - cfg=`output/526aa0b9-s7_cfg_args.yml`
+  - log=`log/s7_A0_case2_E4_strong_wA099_k001_ds100_20251228_221652.log`
+
+后验检查（重要）：
+
+- 四个 s7 run 的日志中 `[s7] wA_std=0`，`wA_min=max=0.99000`，说明 per-anchor `wA_i` 没有发生学习。
+- 定位原因：`s7_wA_head` 未被加入 optimizer 参数列表（`AnchorDeformationNet.get_mlp_parameters()` 漏掉了 `self.s7_wA_head.parameters()`），导致 head 权重始终为 0，`ΔwA_i ≡ 0`。
+- 修复：在 `x2_gaussian/gaussian/anchor_module.py` 的 `get_mlp_parameters()` 中加入 `if self.s7_wA_head is not None: params.extend(self.s7_wA_head.parameters())`。
+- 因此，本批 4 个 run 的指标主要反映“重复训练的随机波动”，不能用于验证 s7 的有效性，需要在修复后重跑。
+
+本批 4-run 指标（供参考，视为 baseline 噪声）：
+
+- E1_free：
+  - 5k：psnr3d=32.203, ssim3d=0.895, psnr2d=37.097, ssim2d=0.983
+  - 15k：psnr3d=34.582, ssim3d=0.926, psnr2d=42.149, ssim2d=0.988
+  - 20k：psnr3d=35.570, ssim3d=0.934, psnr2d=42.811, ssim2d=0.989
+  - 30k：psnr3d=35.811, ssim3d=0.938, psnr2d=43.411, ssim2d=0.990
+  - 40k：psnr3d=35.973, ssim3d=0.941, psnr2d=43.539, ssim2d=0.990
+  - 50k：psnr3d=36.140, ssim3d=0.942, psnr2d=43.525, ssim2d=0.991
+- E2_graph：
+  - 5k：psnr3d=32.205, ssim3d=0.895, psnr2d=37.103, ssim2d=0.983
+  - 15k：psnr3d=34.637, ssim3d=0.927, psnr2d=42.157, ssim2d=0.988
+  - 20k：psnr3d=35.540, ssim3d=0.934, psnr2d=42.764, ssim2d=0.989
+  - 30k：psnr3d=35.785, ssim3d=0.939, psnr2d=43.330, ssim2d=0.990
+  - 40k：psnr3d=35.988, ssim3d=0.941, psnr2d=43.522, ssim2d=0.990
+  - 50k：psnr3d=36.171, ssim3d=0.943, psnr2d=43.688, ssim2d=0.991
+- E3_graph_temp：
+  - 5k：psnr3d=32.204, ssim3d=0.895, psnr2d=37.103, ssim2d=0.983
+  - 15k：psnr3d=34.702, ssim3d=0.927, psnr2d=42.124, ssim2d=0.988
+  - 20k：psnr3d=35.517, ssim3d=0.934, psnr2d=42.770, ssim2d=0.989
+  - 30k：psnr3d=35.777, ssim3d=0.938, psnr2d=43.292, ssim2d=0.990
+  - 40k：psnr3d=35.953, ssim3d=0.941, psnr2d=43.545, ssim2d=0.990
+  - 50k：psnr3d=36.169, ssim3d=0.943, psnr2d=43.600, ssim2d=0.991
+- E4_strong：
+  - 5k：psnr3d=32.205, ssim3d=0.895, psnr2d=37.098, ssim2d=0.983
+  - 15k：psnr3d=34.606, ssim3d=0.926, psnr2d=42.318, ssim2d=0.988
+  - 20k：psnr3d=35.349, ssim3d=0.932, psnr2d=42.631, ssim2d=0.989
+  - 30k：psnr3d=35.726, ssim3d=0.938, psnr2d=43.445, ssim2d=0.990
+  - 40k：psnr3d=35.981, ssim3d=0.941, psnr2d=43.654, ssim2d=0.990
+  - 50k：psnr3d=36.082, ssim3d=0.942, psnr2d=43.698, ssim2d=0.991
+
+阶段性结论（τpos 扫描）：
+
+- τpos=0.03：整体与 baseline(0.02) 接近，50k 的 2D PSNR 略高（43.416 vs 43.290），3D 基本持平。
+- τpos=0.04：20k~50k 的 3D 指标明显偏低（如 50k: 35.464 vs 35.796），不推荐继续放大。
+
+下一步建议：
+
+- 优先保留 τpos=0.02/0.03 两档，后续如果要继续“促点数/促细节”，建议只在 τpos=0.03 基础上做更小幅的增量（例如 0.025/0.03/0.035），避免直接到 0.04。
+- 若要验证“点数是否真的增多”，建议在日志中同时统计 `pts=` 的演化（densify/prune 期间的点数跳变），再结合 20k~50k 指标判断是否是容量变化而非纯训练随机性。
+
+2025-12-29
+
+s7v2（修复 optimizer 注册后重跑）：case2 A0，per-anchor wA（从 0 开始 50k）
+
+- 代码修复：`AnchorDeformationNet.get_mlp_parameters()` 已加入 `s7_wA_head.parameters()`，保证 per-anchor `wA_i` 可学习。
+
+cfg（从上一批 s7 E1 模板生成，仅修改 model_path/dirname/s7 超参）：
+
+- E1_free：Δ_max=0.01, λ_graph=0, λ_temp=0
+  - output_id=`3b9e5c72-s7v2`
+  - cfg=`output/3b9e5c72-s7v2_cfg_args.yml`
+  - log=`log/s7v2_A0_case2_E1_free_wA099_k001_ds100_20251229_034232.log`
+- E2_graph：Δ_max=0.01, λ_graph=0.01, λ_temp=0
+  - output_id=`79724d62-s7v2`
+  - cfg=`output/79724d62-s7v2_cfg_args.yml`
+  - log=`log/s7v2_A0_case2_E2_graph_wA099_k001_ds100_20251229_034232.log`
+- E3_graph_temp：Δ_max=0.01, λ_graph=0.01, λ_temp=0.01
+  - output_id=`c1450625-s7v2`
+  - cfg=`output/c1450625-s7v2_cfg_args.yml`
+  - log=`log/s7v2_A0_case2_E3_graph_temp_wA099_k001_ds100_20251229_034232.log`
+- E4_strong：Δ_max=0.02, λ_graph=0.01, λ_temp=0.01
+  - output_id=`1528cf9c-s7v2`
+  - cfg=`output/1528cf9c-s7v2_cfg_args.yml`
+  - log=`log/s7v2_A0_case2_E4_strong_wA099_k001_ds100_20251229_034232.log`
+
+nohup（待运行）：
+
+- E1_free：`nohup python train.py --config output/3b9e5c72-s7v2_cfg_args.yml > log/s7v2_A0_case2_E1_free_wA099_k001_ds100_20251229_034232.log 2>&1 &`
+- E2_graph：`nohup python train.py --config output/79724d62-s7v2_cfg_args.yml > log/s7v2_A0_case2_E2_graph_wA099_k001_ds100_20251229_034232.log 2>&1 &`
+- E3_graph_temp：`nohup python train.py --config output/c1450625-s7v2_cfg_args.yml > log/s7v2_A0_case2_E3_graph_temp_wA099_k001_ds100_20251229_034232.log 2>&1 &`
+- E4_strong：`nohup python train.py --config output/1528cf9c-s7v2_cfg_args.yml > log/s7v2_A0_case2_E4_strong_wA099_k001_ds100_20251229_034232.log 2>&1 &`
+
+A0 case2：L_phys / L_anchor_smooth ablation（从 0 开始 50k；基于 `output/b6fdb07b-5/cfg_args.yml`）
+
+- no_smooth：仅关闭 smooth（`lambda_anchor_smooth=0`）
+  - cfg=`output/20251229_094639_ps0_A0_cfg_args.yml`
+  - log=`log/ablate_A0_case2_no_smooth_wA099_k00100_ds100_20251229_094639.log`
+  - nohup：`nohup python train.py --config output/20251229_094639_ps0_A0_cfg_args.yml > log/ablate_A0_case2_no_smooth_wA099_k00100_ds100_20251229_094639.log 2>&1 &`
+- no_phys：仅关闭 L_phys（`lambda_phys=0`）
+  - cfg=`output/20251229_094639_pp0_A0_cfg_args.yml`
+  - log=`log/ablate_A0_case2_no_phys_wA099_k00100_ds100_20251229_094639.log`
+  - nohup：`nohup python train.py --config output/20251229_094639_pp0_A0_cfg_args.yml > log/ablate_A0_case2_no_phys_wA099_k00100_ds100_20251229_094639.log 2>&1 &`
+- both：两者都带（baseline 重跑，控制随机性）
+  - cfg=`output/20251229_094639_base_A0_cfg_args.yml`
+  - log=`log/ablate_A0_case2_both_wA099_k00100_ds100_20251229_094639.log`
+  - nohup：`nohup python train.py --config output/20251229_094639_base_A0_cfg_args.yml > log/ablate_A0_case2_both_wA099_k00100_ds100_20251229_094639.log 2>&1 &`
+
+A0 case2：no_phys + no_smooth（从 0 直接跑到 100k；每 10k eval；基于 `output/20251229_094639_base_A0_cfg_args.yml`）
+
+- cfg=`output/20251230_032322_np0ns0_A0_cfg_args.yml`
+- log=`log/ablate100k_from0_A0_case2_no_phys_no_smooth_wA099_k00100_ds100_20251230_032322.log`
+- nohup：`nohup python train.py --config output/20251230_032322_np0ns0_A0_cfg_args.yml > log/ablate100k_from0_A0_case2_no_phys_no_smooth_wA099_k00100_ds100_20251230_032322.log 2>&1 &`
+
+s7 / s7v2（case2 A0）阶段性复盘：
+
+- s7（20251228_221652 这批）：`wA_std` 全程为 0（`wA` 恒等于 `wA_base=0.99`），说明 per-anchor `wA` 没有学习到（当时 `s7_wA_head` 未加入 optimizer）。
+- s7v2（20251229_034232 这批）：`wA_std` 在 7k~20k 明显 >0（约 1e-4~5e-4），说明 per-anchor `wA` 分支已生效；但随着训练推进 `wA` 很快塌到接近常数（均值大约落到 0.98/0.97 一带，std 逐步趋近 0），正则项（graph/temp）在当前配置下基本为 0。
+- 50k 指标（仅用于粗对比）：E1/E2/E3/E4 的 psnr3d/psnr2d 差异很小，尚不足以证明 s7v2 带来稳定提升。
+
+s7v3（case2 A0）下一批（目标：避免 wA 塌缩为常数；让 graph/temp 正则项非零）
+
+- E1_dmax005（只放开 delta 上限，观察 wA 是否仍塌缩）：
+  - cfg=`output/20251230_071406_E1_dmax005_A0_cfg_args.yml`
+  - dmax=0.05, λ_graph=0.0, λ_temp=0.0, k=8
+- E2_dmax005_g01（增加 graph 正则，观察 L_graph 是否非零且 wA_std 是否维持）：
+  - cfg=`output/20251230_071406_E2_dmax005_g01_A0_cfg_args.yml`
+  - dmax=0.05, λ_graph=0.1, λ_temp=0.0, k=8
+- E3_dmax005_g01_t01（graph+temp 同时加，防止过拟合/局部振荡）：
+  - cfg=`output/20251230_071406_E3_dmax005_g01_t01_A0_cfg_args.yml`
+  - dmax=0.05, λ_graph=0.1, λ_temp=0.1, k=8
+- E4_dmax010_g05_t05_k16（强正则 + 更大邻域，尝试维持结构差异）：
+  - cfg=`output/20251230_071406_E4_dmax010_g05_t05_k16_A0_cfg_args.yml`
+  - dmax=0.10, λ_graph=0.5, λ_temp=0.5, k=16
+
+s7v3 跑完结论（失败）：
+
+- 现象：wA 训练过程中显著下滑（例如 E4: 0.99 → ~0.89），最终 wA_std 也趋近 0；指标变差。
+- 推断：wA 在当前参数化下可向下调（tanh 允许负 delta），优化器会把“降低 wA”当作快速降主损的捷径，破坏 0.99 的甜点设定。
+
+s7v4（case2 A0）改进方向：固定 0.99 甜点（wA 只允许上调）
+
+- 代码开关：`s7_wA_only_up=true`，令 wA ∈ [wA_base, wA_base + delta_max]，避免 wA 被训练压低。
+- E1_onlyup_d001：
+  - cfg=`output/20251230_114833_E1_onlyup_d001_A0_cfg_args.yml`
+  - dmax=0.01, λ_graph=0.0, λ_temp=0.0, k=8
+- E2_onlyup_d002：
+  - cfg=`output/20251230_114833_E2_onlyup_d002_A0_cfg_args.yml`
+  - dmax=0.02, λ_graph=0.0, λ_temp=0.0, k=8
+- E3_onlyup_d002_g005：
+  - cfg=`output/20251230_114833_E3_onlyup_d002_g005_A0_cfg_args.yml`
+  - dmax=0.02, λ_graph=0.05, λ_temp=0.0, k=8
+- E4_onlyup_d002_g005_t005：
+  - cfg=`output/20251230_114833_E4_onlyup_d002_g005_t005_A0_cfg_args.yml`
+  - dmax=0.02, λ_graph=0.05, λ_temp=0.05, k=8
+
+- nohup（log 不冲突）：
+  - `nohup python train.py --config output/20251230_114833_E1_onlyup_d001_A0_cfg_args.yml > log/s7v4_A0_case2_E1_onlyup_d001_wA099_k001_ds100_20251230_114833.log 2>&1 &`
+  - `nohup python train.py --config output/20251230_114833_E2_onlyup_d002_A0_cfg_args.yml > log/s7v4_A0_case2_E2_onlyup_d002_wA099_k001_ds100_20251230_114833.log 2>&1 &`
+  - `nohup python train.py --config output/20251230_114833_E3_onlyup_d002_g005_A0_cfg_args.yml > log/s7v4_A0_case2_E3_onlyup_d002_g005_wA099_k001_ds100_20251230_114833.log 2>&1 &`
+  - `nohup python train.py --config output/20251230_114833_E4_onlyup_d002_g005_t005_A0_cfg_args.yml > log/s7v4_A0_case2_E4_onlyup_d002_g005_t005_wA099_k001_ds100_20251230_114833.log 2>&1 &`
+
+2025-12-30
+
+a1：可观测性加权的统一连续体正则（替代/统一 L_phys + L_smooth 的先验角色；anchor graph surrogate）
+
+- 训练设置：case2 A0，从 0 开始 50k，每 10k eval
+- baseline：`lambda_phys=0, lambda_anchor_smooth=0, mask_ratio=0`
+- a1 超参：`a1_reg_enable=true, a1_reg_lambda=0.01, a1_reg_k=8, a1_reg_mask_ratio=0`
+
+4-run：
+
+- A_g1：只开一阶（邻域位移差）
+  - cfg=`output/20251230_1441_a1A_g1_cfg_args.yml`
+  - log=`log/a1_A0_case2_A_g1_only_lambda0010_k8_mask0_20251230_1441.log`
+- B_g2：只开二阶（离散 laplacian 差，薄板倾向）
+  - cfg=`output/20251230_1441_a1B_g2_cfg_args.yml`
+  - log=`log/a1_A0_case2_B_g2_only_lambda0010_k8_mask0_20251230_1441.log`
+- C_g1g2：一阶 + 二阶
+  - cfg=`output/20251230_1441_a1C_g1g2_cfg_args.yml`
+  - log=`log/a1_A0_case2_C_g1g2_lambda0010_k8_mask0_20251230_1441.log`
+- D_g1g2_p2：一阶 + 二阶，且权重更硬（power=2）
+  - cfg=`output/20251230_1441_a1D_g1g2_p2_cfg_args.yml`
+  - log=`log/a1_A0_case2_D_g1g2_p2_lambda0010_k8_mask0_20251230_1441.log`
+
+nohup（待运行）：
+
+- `nohup python train.py --config output/20251230_1441_a1A_g1_cfg_args.yml > log/a1_A0_case2_A_g1_only_lambda0010_k8_mask0_20251230_1441.log 2>&1 &`
+- `nohup python train.py --config output/20251230_1441_a1B_g2_cfg_args.yml > log/a1_A0_case2_B_g2_only_lambda0010_k8_mask0_20251230_1441.log 2>&1 &`
+- `nohup python train.py --config output/20251230_1441_a1C_g1g2_cfg_args.yml > log/a1_A0_case2_C_g1g2_lambda0010_k8_mask0_20251230_1441.log 2>&1 &`
+- `nohup python train.py --config output/20251230_1441_a1D_g1g2_p2_cfg_args.yml > log/a1_A0_case2_D_g1g2_p2_lambda0010_k8_mask0_20251230_1441.log 2>&1 &`
+
+跑完结果（50k）：
+
+- A_g1（g1 only）：失败（OOM）
+  - log=`log/a1_A0_case2_A_g1_only_lambda0010_k8_mask0_20251230_1441.log`
+  - 报错：`torch.cuda.OutOfMemoryError`（在 `compute_regulation -> _plane_regulation -> compute_plane_smoothness`）
+- B_g2（g2 only）：
+  - 50k：psnr3d=36.293, ssim3d=0.943, psnr2d=43.576, ssim2d=0.991
+- C_g1g2（g1+g2）：
+  - 50k：psnr3d=36.256, ssim3d=0.943, psnr2d=43.570, ssim2d=0.990
+- D_g1g2_p2（g1+g2, power=2）：
+  - 50k：psnr3d=36.235, ssim3d=0.943, psnr2d=43.519, ssim2d=0.991
+
+阶段性结论（a1）：
+
+- 在当前设置（`mask_ratio=0`, `a1_reg_mask_ratio=0`）下，B/C/D 的 50k 指标差异非常小（均在噪声级别）。
+- A_g1 的 OOM 与 a1 本身关联性不强，更像是当时 GPU 上并行进程过多导致的系统性 OOM（日志中列出了多个进程占用显存）。
+- 下一步如果要验证 “可观测性加权” 的有效性，应当在 a1 中引入非零 `a1_reg_mask_ratio`（或复用 `mask_ratio`），使 c(x) 在训练中形成非平凡场。
+
+2025-12-31
+
+a1（补）A_g1 重跑（避免上次 OOM；cfg/log 重新命名避免覆盖旧结果）
+
+- cfg=`output/20251231_0352_a1A_g1_rerun_cfg_args.yml`
+- log=`log/a1_rerun_A0_case2_A_g1_only_lambda0010_k8_mask0_20251231_0352.log`
+- `nohup python train.py --config output/20251231_0352_a1A_g1_rerun_cfg_args.yml > log/a1_rerun_A0_case2_A_g1_only_lambda0010_k8_mask0_20251231_0352.log 2>&1 &`
+
+a2：a1 的 mask 实验（`a1_reg_mask_ratio=0.25`，其余保持一致；验证 observability-weighted 的实际作用）
+
+- 训练设置：case2 A0，从 0 开始 50k，每 10k eval
+- baseline：同 a1（`lambda_phys=0, lambda_anchor_smooth=0, mask_ratio=0`）
+- a2 超参：`a1_reg_enable=true, a1_reg_lambda=0.01, a1_reg_k=8, a1_reg_mask_ratio=0.25`
+
+4-run：
+
+- A_g1：只开一阶（邻域位移差）
+  - cfg=`output/20251231_0352_a2A_g1_mask025_cfg_args.yml`
+  - log=`log/a2_A0_case2_A_g1_only_mask025_lambda0010_k8_20251231_0352.log`
+- B_g2：只开二阶（离散 laplacian 差，薄板倾向）
+  - cfg=`output/20251231_0352_a2B_g2_mask025_cfg_args.yml`
+  - log=`log/a2_A0_case2_B_g2_only_mask025_lambda0010_k8_20251231_0352.log`
+- C_g1g2：一阶 + 二阶
+  - cfg=`output/20251231_0352_a2C_g1g2_mask025_cfg_args.yml`
+  - log=`log/a2_A0_case2_C_g1g2_mask025_lambda0010_k8_20251231_0352.log`
+- D_g1g2_p2：一阶 + 二阶，且权重更硬（power=2）
+  - cfg=`output/20251231_0352_a2D_g1g2_p2_mask025_cfg_args.yml`
+  - log=`log/a2_A0_case2_D_g1g2_p2_mask025_lambda0010_k8_20251231_0352.log`
+
+nohup：
+
+- `nohup python train.py --config output/20251231_0352_a2A_g1_mask025_cfg_args.yml > log/a2_A0_case2_A_g1_only_mask025_lambda0010_k8_20251231_0352.log 2>&1 &`
+- `nohup python train.py --config output/20251231_0352_a2B_g2_mask025_cfg_args.yml > log/a2_A0_case2_B_g2_only_mask025_lambda0010_k8_20251231_0352.log 2>&1 &`
+- `nohup python train.py --config output/20251231_0352_a2C_g1g2_mask025_cfg_args.yml > log/a2_A0_case2_C_g1g2_mask025_lambda0010_k8_20251231_0352.log 2>&1 &`
+- `nohup python train.py --config output/20251231_0352_a2D_g1g2_p2_mask025_cfg_args.yml > log/a2_A0_case2_D_g1g2_p2_mask025_lambda0010_k8_20251231_0352.log 2>&1 &`
+
+2025-12-30
+
+s7v4（case2 A0）only-up：固定 0.99 甜点（wA 只允许上调），从 0 开始 50k
+
+- E1_onlyup_d001：
+  - log=`log/s7v4_A0_case2_E1_onlyup_d001_wA099_k001_ds100_20251230_114833.log`
+  - 50k：psnr3d=36.186, ssim3d=0.943, psnr2d=43.790, ssim2d=0.991
+- E2_onlyup_d002：
+  - log=`log/s7v4_A0_case2_E2_onlyup_d002_wA099_k001_ds100_20251230_114833.log`
+  - 50k：psnr3d=36.093, ssim3d=0.943, psnr2d=43.692, ssim2d=0.991
+- E3_onlyup_d002_g005：
+  - log=`log/s7v4_A0_case2_E3_onlyup_d002_g005_wA099_k001_ds100_20251230_114833.log`
+  - 50k：psnr3d=36.069, ssim3d=0.942, psnr2d=43.609, ssim2d=0.990
+  - 统计：`L_graph=0.000000`
+- E4_onlyup_d002_g005_t005：
+  - log=`log/s7v4_A0_case2_E4_onlyup_d002_g005_t005_wA099_k001_ds100_20251230_114833.log`
+  - 50k：psnr3d=36.166, ssim3d=0.943, psnr2d=43.665, ssim2d=0.991
+  - 统计：`L_graph=0.000000, L_temp=0.000000`
+
+阶段性结论（s7v4）：
+
+- only-up 成功避免了 wA 被训练压低（wA 始终 >= 0.99），但 `wA_std` 在约 25k 后快速塌到 0，最终 wA 基本退化为常数。
+- 在 E3/E4 中，即便设置了 graph/temp 正则，日志中 `L_graph/L_temp` 仍长期为 0，说明当前实现/权重下正则项基本没有生效或数值过小。
+- 50k 指标：E1 最好（2D PSNR=43.790），但四个实验差异总体仍偏小；目前更像是 “稳定性/不掉点” 而非 “明确提升”。
 
 ## [2025-12-20] s5：将 dx 的融合思想拓展到 ds/dr（逐步实验）
 

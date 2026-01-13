@@ -3,6 +3,20 @@ import sys
 import os
 
 
+def _str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return True
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in ("1", "true", "t", "yes", "y", "on"):
+            return True
+        if s in ("0", "false", "f", "no", "n", "off"):
+            return False
+    raise ValueError(f"Invalid boolean value: {v}")
+
+
 class GroupParams:
     pass
 
@@ -20,7 +34,12 @@ class ParamGroup:
             if shorthand:
                 if t == bool:
                     group.add_argument(
-                        "--" + key, ("-" + key[0:1]), default=value, action="store_true"
+                        "--" + key,
+                        ("-" + key[0:1]),
+                        default=value,
+                        nargs="?",
+                        const=True,
+                        type=_str2bool,
                     )
                 else:
                     group.add_argument(
@@ -28,7 +47,13 @@ class ParamGroup:
                     )
             else:
                 if t == bool:
-                    group.add_argument("--" + key, default=value, action="store_true")
+                    group.add_argument(
+                        "--" + key,
+                        default=value,
+                        nargs="?",
+                        const=True,
+                        type=_str2bool,
+                    )
                 else:
                     group.add_argument("--" + key, default=value, type=t)
 
