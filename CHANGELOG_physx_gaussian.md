@@ -660,20 +660,20 @@ nohup python train.py \
 **生成时间**: 2026-01-12 03:35
 python tools/create_robustness_datasets.py \
   --input data/dir_4d_case1.pickle \
-  --view_ratio 0.40
+  --view_ratio 0.10
 
 python tools/create_robustness_datasets.py \
   --input data/dir_4d_case1.pickle \
   --view_ratio 0.60
 
-python initialize_pcd.py --data data/dir_4d_case1_sparse40.pickle
+python initialize_pcd.py --data data/dir_4d_case1_sparse10.pickle
 python initialize_pcd.py --data data/dir_4d_case1_sparse60.pickle
 
-nohup python train.py -s data/dir_4d_case1_sparse40.pickle \
+nohup python train.py -s data/dir_4d_case1_sparse10.pickle \
   --coarse_iter 5000 --iterations 30000 \
   --test_iterations 5000 10000 20000 30000\
-  --save_iterations 30000 --save_checkpoint --dirname sp40_baseline \
-  > log/$(date +%Y%m%d_%H%M%S)_sp40_baseline.log 2>&1 &
+  --save_iterations 30000 --save_checkpoint --dirname sp10_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp10_baseline.log 2>&1 &
 
 nohup python train.py -s data/dir_4d_case1_sparse60.pickle \
   --coarse_iter 5000 --iterations 30000 \
@@ -683,12 +683,12 @@ nohup python train.py -s data/dir_4d_case1_sparse60.pickle \
 
 nohup python train.py \
   --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
-  --source_path data/dir_4d_case1_sparse40.pickle \
+  --source_path data/dir_4d_case1_sparse10.pickle \
   --iterations 60000 \
   --test_iterations 5000 10000 20000 30000 40000 50000 60000\
   --save_iterations 60000 --save_checkpoint \
-  --dirname 20260112_sp40_np0ns0_A0 \
-  > log/20260112_sp40_np0ns0_A0_0to100k.log 2>&1 &
+  --dirname 20260112_sp10_np0ns0_A0 \
+  > log/20260112_sp10_np0ns0_A0_0to100k.log 2>&1 &
   
 nohup python train.py \
   --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
@@ -700,51 +700,347 @@ nohup python train.py \
   > log/20260112_sp60_np0ns0_A0_0to100k.log 2>&1 &
 
 
-**生成时间**: 2026-01-13 17:25 (更新)
+**生成时间**: 2026-01-14 5:31 (更新)
 python tools/create_robustness_datasets.py \
-  --input data/dir_4d_case3.pickle \
+  --input data/spare_mc_4d_case3.pickle \
   --view_ratio 0.200
 
 python tools/create_robustness_datasets.py \
-  --input data/dir_4d_case3.pickle \
+  --input data/spare_mc_4d_case3.pickle \
   --view_ratio 0.500
 
 
-python initialize_pcd.py --data data/dir_4d_case3_sparse20.pickle
-python initialize_pcd.py --data data/dir_4d_case3_sparse50.pickle
+python initialize_pcd.py --data data/spare_mc_4d_case3_sparse20.pickle
+python initialize_pcd.py --data data/spare_mc_4d_case3_sparse50.pickle
 
-nohup python train.py -s data/dir_4d_case3_sparse20.pickle \
+nohup python train.py -s data/spare_mc_4d_case3_sparse20.pickle \
   --coarse_iter 5000 --iterations 30000 \
   --test_iterations 5000 10000 20000 30000\
-  --save_iterations 30000 --save_checkpoint --dirname sp20_case3_baseline \
-  > log/$(date +%Y%m%d_%H%M%S)_sp20_case3_baseline.log 2>&1 &
+  --save_iterations 30000 --save_checkpoint --dirname sp20_spare_case3_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp20_spare_case3_baseline.log 2>&1 &
 
 
-nohup python train.py -s data/dir_4d_case3_sparse50.pickle \
+nohup python train.py -s data/spare_mc_4d_case3_sparse50.pickle \
   --coarse_iter 5000 --iterations 30000 \
   --test_iterations 5000 10000 20000 30000\
-  --save_iterations 30000 --save_checkpoint --dirname sp50_case3_baseline \
-  > log/$(date +%Y%m%d_%H%M%S)_sp50_case3_baseline.log 2>&1 &
+  --save_iterations 30000 --save_checkpoint --dirname sp50_spare_case3_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_sp50_spare_case3_baseline.log 2>&1 &
 
 
 nohup python train.py \
   --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
-  --source_path data/dir_4d_case3_sparse20.pickle \
+  --source_path data/spare_mc_4d_case3_sparse20.pickle \
   --iterations 60000 \
   --test_iterations 5000 10000 20000 30000 40000 50000 60000\
   --save_iterations 60000 --save_checkpoint \
-  --dirname 20260112_sp20_case3_np0ns0_A0 \
-  > log/20260113_sp20_case3_np0ns0_A0_0to100k.log 2>&1 &
+  --dirname 20260114_sp20_spare_case3_np0ns0_A0 \
+  > log/20260114_sp20_spare_case3_np0ns0_A0_0to100k.log 2>&1 &
 
 
 nohup python train.py \
   --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
-  --source_path data/dir_4d_case3_sparse50.pickle \
+  --source_path data/spare_mc_4d_case3_sparse50.pickle \
   --iterations 60000 \
   --test_iterations 5000 10000 20000 30000 40000 50000 60000\
   --save_iterations 60000 --save_checkpoint \
-  --dirname 20260112_sp50_case3_np0ns0_A0 \
-  > log/20260113_sp50_case3_np0ns0_A0_0to100k.log 2>&1 &
+  --dirname 20260114_sp50_spare_case3_np0ns0_A0 \
+  > log/20260114_sp50_spare_case3_np0ns0_A0_0to100k.log 2>&1 &
+
+**生成时间**: 2026-01-15 18:15 (更新)
+python tools/create_robustness_datasets.py \
+  --input data/XCAT.pickle \
+  --phase_noise 0.5
+
+python tools/create_limited_angle.py \
+  --input data/XCAT.pickle \
+  --angle_range 120
+
+python initialize_pcd.py --data data/XCAT_noise0.5.pickle
+python initialize_pcd.py --data data/XCAT_limited120.pickle
+
+nohup python train.py -s data/XCAT_noise0.5.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname n05_XCAT_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_n05_XCAT_baseline.log 2>&1 &
+
+
+nohup python train.py -s data/XCAT_limited120.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000\
+  --save_iterations 30000 --save_checkpoint --dirname l120_XCAT_baseline \
+  > log/$(date +%Y%m%d_%H%M%S)_l120_XCAT_baseline.log 2>&1 &
+
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/XCAT_noise0.5.pickle \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 60000\
+  --save_iterations 60000 --save_checkpoint \
+  --dirname 20260115_n05_XCAT_np0ns0_A0 \
+  > log/20260115_n05_XCAT_np0ns0_A0_0to100k.log 2>&1 &
+
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/XCAT_limited120.pickle \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 60000\
+  --save_iterations 60000 --save_checkpoint \
+  --dirname 20260115_l120_XCAT_np0ns0_A0 \
+  > log/20260115_l120_XCAT_np0ns0_A0_0to100k.log 2>&1 &
+
+**生成时间**: 2026-01-17 12:42 (更新)
+nohup python train.py -s data/dir_4d_case5.pickle \
+  --coarse_iter 5000 --iterations 10000 \
+  --test_iterations 5000 10000\
+  --save_iterations 10000 --save_checkpoint --dirname x2_dir_case5_10k \
+  > log/$(date +%Y%m%d_%H%M%S)_x2_dir_case5_10k.log 2>&1 &
+
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case5.pickle \
+  --iterations 10000 \
+  --test_iterations 5000 10000\
+  --save_iterations 10000 --save_checkpoint \
+  --dirname leo_dir_case5_10k \
+  > log/$(date +%Y%m%d_%H%M%S)_leo_dir_case5_10k.log 2>&1 &
+
+
+**生成时间**: 2026-01-17 05:24
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/XCAT.pickle \
+  --dirname 20260117_XCAT_wt1_np0ns0_A0 \
+  --s4_dx_anchor_weight 0 \
+  --s4_ds_hex_weight 1 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 60000\
+  --save_iterations 60000 --save_checkpoint\
+  > log/20260117_XCAT_wt0_np0ns0_A0.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/XCAT.pickle \
+  --dirname 20260117_XCAT_wt1_np0ns0_A0 \
+  --s4_dx_anchor_weight 1 \
+  --s4_ds_hex_weight 1 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 60000\
+  --save_iterations 60000 --save_checkpoint\
+  > log/20260117_XCAT_wt1_np0ns0_A0.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/XCAT.pickle \
+  --dirname 20260117_XCAT_wt1_np0ns0_A0 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 60000\
+  --save_iterations 60000 --save_checkpoint\
+  > log/20260117_XCAT_ds0_np0ns0_A0.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/XCAT.pickle \
+  --dirname 20260117_XCAT_wt1_np0ns0_A0 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 1 \
+  --s4_dr_hex_weight 1 \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 60000\
+  --save_iterations 60000 --save_checkpoint\
+  > log/20260117_XCAT_dr1_np0ns0_A0.log 2>&1 &
+  
+  
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/XCAT.pickle \
+  --dirname 20260117_XCAT_wt1_np0ns0_A0 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 1 \
+  --s4_dr_hex_weight 0 \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 60000\
+  --save_iterations 60000 --save_checkpoint\
+  > log/20260117_XCAT_dr0_np0ns0_A0.log 2>&1 &
+  
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/XCAT.pickle \
+  --dirname 20260117_XCAT_wt1_np0ns0_A0 \
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 0.01 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 60000\
+  --save_iterations 60000 --save_checkpoint\
+  > log/20260117_XCAT_ds001_np0ns0_A0.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/XCAT.pickle \
+  --dirname 20260117_XCAT_wt1_np0ns0_A0 \
+  --s4_dx_anchor_weight 0.9 \
+  --s4_ds_hex_weight 1 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 60000\
+  --save_iterations 60000 --save_checkpoint\
+  > log/20260117_XCAT_wt09_np0ns0_A0.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/XCAT.pickle \
+  --dirname 20260117_XCAT_wt1_np0ns0_A0 \
+  --s4_dx_anchor_weight 0.5 \
+  --s4_ds_hex_weight 1 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 60000\
+  --save_iterations 60000 --save_checkpoint\
+  > log/20260117_XCAT_wt05_np0ns0_A0.log 2>&1 &
+
+
+**生成时间**: 2026-01-25 22:35 (更新) 
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case2_sparse50.pickle \
+  --dirname 20260125_sp50_case2_wt1_ds1_dr001_temporal \
+  --s4_dx_anchor_weight 1 \
+  --s4_ds_hex_weight 1 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 60000 \
+  --save_iterations 60000 --save_checkpoint \
+  --eval_temporal_metrics \
+  > log/20260125_sp50_case2_wt1_ds1_dr001_temporal.log 2>&1 &
+
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case2_sparse50.pickle \
+  --dirname 20260125_sp50_case2_wt0_ds1_dr001_temporal \
+  --s4_dx_anchor_weight 0 \
+  --s4_ds_hex_weight 1 \
+  --s4_dr_hex_weight 0.01 \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 60000 \
+  --save_iterations 60000 --save_checkpoint \
+  --eval_temporal_metrics \
+  > log/20260125_sp50_case2_wt0_ds1_dr001_temporal.log 2>&1 &
+
+nohup python train.py -s data/dir_4d_case5_sparse50.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 1 5000 10000 20000 30000 \
+  --save_iterations 30000 --save_checkpoint \
+  --dirname 20260127_sp50_case5_baseline_temporal \
+  --eval_temporal_metrics \
+  > log/20260127_sp50_case5_baseline_temporal.log 2>&1 &
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case5_sparse50.pickle \
+  --dirname 20260127_sp50_case5_np0ns0_A0_temporal \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 60000 \
+  --save_iterations 60000 --save_checkpoint \
+  --eval_temporal_metrics \
+  > log/20260127_sp50_case5_np0ns0_A0_temporal.log 2>&1 &
+
+  --s4_dx_anchor_weight 0.99 \  w_T ∈ {0.0, 0.5, 0.8, 0.9, 0.95, 0.97, 0.99, 1.0}
+  --s4_ds_hex_weight 1 \
+  --s4_dr_hex_weight 0.01 \
+
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case2_wt0_ds1_dr001_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case2_wt050_ds1_dr001_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case2_wt080_ds1_dr001_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case2_wt090_ds1_dr001_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case2_wt095_ds1_dr001_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case2_wt097_ds1_dr001_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case2_wt1_ds1_dr001_temporal.log
+根据上述内容，写一个ipynb，目的是画一张类似我上传这个图的实验图。注意结合我们全文的故事，我这里是把ds1_dr001固定为默认，改变w_T ∈ {0.0, 0.5, 0.8, 0.9, 0.95, 0.97, 0.99, 1.0}做的一些实验。你把每个实验的最好3d结果用散点画到图上，然后看能不能用一个美丽的曲线（类似我上传的图片）去拟合，并且拟合的这个曲线能完美符合我们之前理论分析和方法里讲的全文的故事就最完美了。
+
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 1 \  η_s ∈ {0, 1e-3, 1e-2, 1e-1, 1}
+  --s4_dr_hex_weight 0.01 \
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case2_wt099_ds0_dr001_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case2_wt099_ds1e-1_dr001_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case2_wt099_ds1e-2_dr001_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case2_wt099_ds1e-3_dr001_temporal.log
+和默认/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case2_np0ns0_A0_temporal.log
+现在同样的，根据上述内容，往后补充这个ipynb，目的是画一张类似的实验图。注意结合我们全文（icml2026v4_clean_plus.tex)的故事，我这里是把wT=0.99和 η_r=0.01但是 η_s ∈ {0, 1e-3, 1e-2, 1e-1, 1}做的一些实验。你把每个实验的最好3d结果用散点画到图上，然后看能不能用一个美丽的曲线或直线去拟合，并且拟合的这个曲线或直线能完美符合我们之前理论分析和方法里讲的全文的故事就最完美了。
+  --s4_dx_anchor_weight 0.99 \
+  --s4_ds_hex_weight 1 \
+  --s4_dr_hex_weight 0.01 \   η_r ∈ {0, 1e-3, 1e-2, 5e-2, 1e-1, 1}
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case2_wt099_ds1_dr0_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case2_wt099_ds1_dr1_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case2_wt099_ds1_dr1e-1_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case2_wt099_ds1_dr1e-3_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case2_wt099_ds1_dr5e-2_temporal.log
+和默认/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case2_np0ns0_A0_temporal.log
+现在同样的，根据上述内容，往后补充这个ipynb，目的是画一张类似的实验图。注意结合我们全文（icml2026v4_clean_plus.tex）的故事，我这里是把wT=0.99和 η_s=1但是 η_r ∈ {0, 1e-3, 1e-2（default）, 5e-2, 1e-1, 1}做的一些实验。你把每个实验的最好3d结果用散点画到图上，然后看能不能用一个美丽的曲线或直线去拟合，并且拟合的这个曲线或直线能完美符合我们之前理论分析和方法里讲的全文的故事就最完美了。
+很好，在这条红线基础上，变成原来两种颜色的虚线，分别表示拟合PSNR和SSIM
+DIR sp50 tem_met (ap:all)
+DIR sp50+noise0.5 sp50+lim?
+
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260127_170952_n05_case1sp50_baseline_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260127_171149_n05_case2sp50_baseline_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260127_171338_n05_case3sp50_baseline_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260127_n05_case1sp50_np0ns0_A0_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260127_n05_case2sp50_np0ns0_A0_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260128_001134_n05_case4sp50_baseline_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260128_001229_n05_case5sp50_baseline_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260128_n05_case3sp50_np0ns0_A0_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260128_n05_case4sp50_np0ns0_A0_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260128_n05_case5sp50_np0ns0_A0_temporal.log
+读取上述列表中的结果，其中baseline中iter1是FDK方法，5000步是R^{2}方法，大于5000步中3d结果最好的是X^{2}方法。np0ns0_A0中最好的是我们的方法Ours。现在读取结果并在论文/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/icml2026v4_clean_plus.tex中增加一个正文表（5个case的平均）和一个附录表（per-case版本），汇报3d效果和temporal效果，作为breathing perturbations on DIR (average over patients)替代现在的正文表（Robustness under limited-angle and breathing perturba-
+tions on DIR (average over patients). We report 3D PSNR/SSIM.）和附录表（Per-case robustness results on DIR under limited-angle and noisy projection perturbations. We report 3D PSNR/SSIM averaged
+over time for each patient and their mean.），这原来的两个都删掉。最后调整相应论文正文和附录的文字部分。
+
+python tools/create_robustness_datasets.py \
+  --input data/dir_4d_case5_sparse50.pickle \
+  --phase_noise 0.5
+
+python initialize_pcd.py --data data/dir_4d_case5_sparse50_noise0.5.pickle
+
+nohup python train.py -s data/dir_4d_case5_sparse50_noise0.5.pickle \
+  --coarse_iter 5000 --iterations 30000 \
+  --test_iterations 5000 10000 20000 30000 \
+  --eval_temporal_metrics \
+  --save_iterations 30000 --save_checkpoint --dirname n05_case5sp50_baseline_temporal \
+  > log/$(date +%Y%m%d_%H%M%S)_n05_case5sp50_baseline_temporal.log 2>&1 &
+
+
+nohup python train.py \
+  --config output/20260102_1620_case1_np0ns0_A0_cfg_args.yml \
+  --source_path data/dir_4d_case5_sparse50_noise0.5.pickle \
+  --iterations 60000 \
+  --test_iterations 5000 10000 20000 30000 40000 50000 60000\
+  --eval_temporal_metrics \
+  --save_iterations 60000 --save_checkpoint \
+  --dirname n05_case5sp50_np0ns0_A0_temporal \
+  > log/20260128_n05_case5sp50_np0ns0_A0_temporal.log 2>&1 &
+
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case1_baseline_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260125_sp50_case1_np0ns0_A0_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260127_sp50_case2_baseline_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260127_sp50_case2_np0ns0_A0_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260127_sp50_case3_baseline_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260127_sp50_case3_np0ns0_A0_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260127_sp50_case4_baseline_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260127_sp50_case4_np0ns0_A0_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260127_sp50_case5_baseline_temporal.log
+/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/log/20260127_sp50_case5_np0ns0_A0_temporal.log
+根据上述我的实验log查找对应output，并使我能使用/root/autodl-tmp/4dctgs/x2-gaussian-main-origin/qualitative_dir_case2_sp50_v2.ipynb把case1~5的各方法对比出来。目前这个ipynb只有case2的，并且只有GT FDK R^{2},我需要继续补充case1~5的baseline中最好结果是X^{2},np0ns0_A0中最好结果是Ours。把这两个补充到后面。
 
 **生成时间**: 2025-12-16 17:44 (更新)  
 **基于提交**: PhysX-Boosted s0/s1/s2/s3 实现
@@ -4484,6 +4780,10 @@ python tools/create_robustness_datasets.py \
   --view_ratio 0.5 \
   --combine
 
+python tools/create_limited_angle.py \
+  --input data/dir_4d_case1.pickle \
+  --angle_range 120
+
 # 输出: data/dir_4d_case1_noise0.5_sparse50.pickle
 ```
 
@@ -4622,7 +4922,30 @@ python tools/add_motion_blur.py \
   --blur_type exposure \
   --exposure_phases 0.3
 ```
-
+sp40        43.78/0.975@30000   44.94/0.980@50000   +1.16/+0.005
+sp33        43.60/0.973@30000   44.69/0.979@60000   +1.09/+0.005
+sp60        44.29/0.976@30000   45.37/0.981@50000   +1.08/+0.005
+dead01      39.76/0.966@10000   40.79/0.967@10000   +1.03/+0.001
+g05         42.39/0.966@10000   43.39/0.969@30000   +1.01/+0.002
+bmix20      44.28/0.977@50000   45.23/0.981@90000   +0.95/+0.004
+n05_sp50    39.32/0.951@5000    40.15/0.966@90000   +0.83/+0.014
+btavg3      44.09/0.975@50000   44.79/0.979@70000   +0.71/+0.003
+sp66        44.20/0.977@50000   44.83/0.981@90000   +0.63/+0.003
+n07         39.41/0.952@5000    40.03/0.963@60000   +0.63/+0.011
+ring3       44.10/0.978@30000   44.70/0.980@40000   +0.60/+0.002
+n05         39.40/0.951@5000    39.78/0.964@80000   +0.38/+0.013
+l120        39.05/0.943@50000   39.41/0.948@80000   +0.37/+0.005
+l180d       37.56/0.926@50000   37.91/0.928@100000  +0.34/+0.002
+sp16        38.87/0.942@10000   39.07/0.948@40000   +0.19/+0.007
+l120d       32.95/0.827@40000   33.13/0.826@80000   +0.18/-0.001
+l90         36.14/0.902@40000   36.29/0.903@70000   +0.15/+0.001
+bexp30      39.24/0.941@20000   39.39/0.943@50000   +0.15/+0.002
+st05        40.58/0.949@10000   40.64/0.949@10000   +0.06/+0.000
+l45         31.78/0.773@40000   31.82/0.766@80000   +0.03/-0.007
+n10         40.56/0.966@50000   39.92/0.964@70000   -0.64/-0.002
+metal20     37.04/0.924@5000    34.05/0.927@10000   -2.99/+0.003
+p4          35.22/0.866@5000    28.84/0.651@10000   -6.38/-0.216
+mixed_p4_g02 35.09/0.864@5000   28.65/0.643@10000   -6.45/-0.221
 ### 已生成的新数据集
 
 | 数据集 | 描述 | 训练视角 |
