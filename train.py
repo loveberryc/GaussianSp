@@ -2060,6 +2060,7 @@ def scene_reconstruction(
                 lambda x, y, z: render(x, y, pipe, z),
                 queryfunc,
                 stage,
+                eval_temporal_metrics=args.eval_temporal_metrics,
             )
 
 def training_report(
@@ -2072,6 +2073,7 @@ def training_report(
     renderFunc,
     queryFunc,
     stage,
+    eval_temporal_metrics: bool = False,
 ):
     # Add training statistics
     if tb_writer:
@@ -2168,6 +2170,9 @@ def training_report(
         ssim_3d_axis_x_list = []
         ssim_3d_axis_y_list = []
         ssim_3d_axis_z_list = []
+        temporal_l1_3d_list = []
+        temporal_ssim_3d_list = []
+        prev_vol_pred = None
         with torch.no_grad():
             for t in range(10):
                 time = (mid_phase_time + phase_time * t) / scanTime
@@ -2180,6 +2185,17 @@ def training_report(
                 ssim_3d_axis_x_list.append(ssim_3d_axis[0])
                 ssim_3d_axis_y_list.append(ssim_3d_axis[1])
                 ssim_3d_axis_z_list.append(ssim_3d_axis[2])
+
+                if eval_temporal_metrics:
+                    if prev_vol_pred is not None:
+                        temporal_l1_3d_list.append(
+                            float(torch.mean(torch.abs(vol_pred - prev_vol_pred)).item())
+                        )
+                        temporal_ssim_3d, _ = metric_vol(
+                            prev_vol_pred, vol_pred, "ssim"
+                        )
+                        temporal_ssim_3d_list.append(float(temporal_ssim_3d))
+                    prev_vol_pred = vol_pred
                 if tb_writer:
                     image_show_3d = np.concatenate(
                         [
@@ -2206,6 +2222,16 @@ def training_report(
                     tb_writer.add_scalar(f"reconstruction/ssim_3d_T{t}", ssim_3d, iteration)
         psnr_3d_mean = float(np.array(psnr_3d_list).mean())
         ssim_3d_mean = float(np.array(ssim_3d_list).mean())
+
+        temporal_l1_3d_mean = None
+        temporal_ssim_3d_mean = None
+        if eval_temporal_metrics:
+            if len(temporal_l1_3d_list) > 0:
+                temporal_l1_3d_mean = float(np.array(temporal_l1_3d_list).mean())
+            if len(temporal_ssim_3d_list) > 0:
+                temporal_ssim_3d_mean = float(
+                    np.array(temporal_ssim_3d_list).mean()
+                )
         eval_dict = {
                 "psnr_3d": psnr_3d_list,
                 "ssim_3d": ssim_3d_list,
@@ -2215,15 +2241,40 @@ def training_report(
                 "psnr_3d_mean": psnr_3d_mean,
                 "ssim_3d_mean": ssim_3d_mean,
             }
+        if eval_temporal_metrics:
+            eval_dict["temporal_l1_3d"] = temporal_l1_3d_list
+            eval_dict["temporal_ssim_3d"] = temporal_ssim_3d_list
+            eval_dict["temporal_l1_3d_mean"] = temporal_l1_3d_mean
+            eval_dict["temporal_ssim_3d_mean"] = temporal_ssim_3d_mean
         with open(osp.join(eval_save_path, "eval3d.yml"), "w") as f:
             yaml.dump(eval_dict, f, default_flow_style=False, sort_keys=False)
         if tb_writer:
             tb_writer.add_scalar(f"reconstruction/psnr_3d_mean", psnr_3d_mean, iteration)
             tb_writer.add_scalar(f"reconstruction/ssim_3d_mean", ssim_3d_mean, iteration)
+            if eval_temporal_metrics:
+                if temporal_l1_3d_mean is not None:
+                    tb_writer.add_scalar(
+                        f"reconstruction/temporal_l1_3d_mean",
+                        temporal_l1_3d_mean,
+                        iteration,
+                    )
+                if temporal_ssim_3d_mean is not None:
+                    tb_writer.add_scalar(
+                        f"reconstruction/temporal_ssim_3d_mean",
+                        temporal_ssim_3d_mean,
+                        iteration,
+                    )
                 
-        tqdm.write(
-            f"[ITER {iteration}] Evaluating: psnr3d {psnr_3d_mean:.3f}, ssim3d {ssim_3d_mean:.3f}, psnr2d {psnr_2d:.3f}, ssim2d {ssim_2d:.3f}"
+        msg = (
+            f"[ITER {iteration}] Evaluating: psnr3d {psnr_3d_mean:.3f}, ssim3d {ssim_3d_mean:.3f}, "
+            f"psnr2d {psnr_2d:.3f}, ssim2d {ssim_2d:.3f}"
         )
+        if eval_temporal_metrics:
+            if temporal_l1_3d_mean is not None:
+                msg += f", temporal_l1_3d {temporal_l1_3d_mean:.6f}"
+            if temporal_ssim_3d_mean is not None:
+                msg += f", temporal_ssim_3d {temporal_ssim_3d_mean:.6f}"
+        tqdm.write(msg)
 
         # Record other metrics
         if tb_writer:
@@ -2257,6 +2308,12 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--coarse_iter", type=int, default=5000)
     parser.add_argument("--dirname", type=str, default="DEBUG")
+    parser.add_argument(
+        "--eval_temporal_metrics",
+        action="store_true",
+        default=False,
+        help="If set, compute temporal coherence metrics during evaluation: mean L1 and mean SSIM between consecutive predicted 3D volumes across phases.",
+    )
     args = parser.parse_args(sys.argv[1:])
 
     # Load configuration files
