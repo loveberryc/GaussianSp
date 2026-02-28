@@ -1,6 +1,5 @@
-# [ICCV 2025] X2-Gaussian: 4D Radiative Gaussian Splatting for Continuous-time Tomographic Reconstruction
+# LEO-Gaussian: Structure-First Lagrangian–Eulerian Radiative Gaussian Splatting for Continuous-Time Tomographic Reconstruction
 
-## [Project Page](https://x2-gaussian.github.io/) | [Paper](https://arxiv.org/abs/2503.21779)
 
 | Animation 1 | Animation 2 | Animation 3 |
 |---|---|---|
